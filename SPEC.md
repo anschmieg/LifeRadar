@@ -213,19 +213,93 @@ relevant conversation context injected via system prompt.
 
 ---
 
-## Phase 5 — Task Management (Future)
+## Phase 5 — Linear as Source of Truth
 
-The `planned_actions` table is the foundation. Extensions:
+**Status: TODO** | **Owner:** Hermes agent
 
-- Natural language task creation via agent
-- Priority/energy/effort scoring (extend v3 triage to tasks)
-- Recurring tasks (cadence profiles from `reminders`)
-- Task dependencies
-- Linear or Taskade integration
+**Goal:** Make Linear the single source of truth for tasks. Deprecate `planned_actions` table in favor of Linear via MCP.
+
+### Rationale
+
+- LifeRadar's `planned_actions` table has always been a local prototype
+- Linear already has workspace, projects, labels, issues — mature UX
+- Single source eliminates sync complexity
+- Hermes can create/update/list via Linear MCP
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Linear (source of truth)                                    │
+│  - Workspaces, Projects, Issues, Labels                      │
+└────────────────────────┬────────────────────────────────────┘
+                          │ MCP
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Hermes LXC                                               │
+│  ├── Hermes Agent                                          │
+│  └── Linear MCP client                                    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Removed from LifeRadar:**
+- `planned_actions` table → deprecated (read-only projection, optional)
+- Phase 5 "task management extensions" → not needed
+
+### Integration Contract
+
+Hermes uses Linear MCP for all task operations:
+
+| Operation | Linear API |
+|-----------|-----------|
+| List tasks | `issues` query (filter by project, labels, assignee) |
+| Create task | `issueCreate` mutation |
+| Update task | `issueUpdate` mutation |
+| Close task | `issueUpdate` (set completed state) |
+| Query by priority | Filter by `priority:high` label |
+| Query by project | Filter by project identifier |
+
+### Projects (from existing Linear setup)
+
+| Project | Purpose |
+|---------|---------|
+| `Configuration` | Model providers, subagent config |
+| `Communication Hub` | LifeRadar sync, email, calendar |
+| `Study Programs` | Research tasks |
+
+### Labels (canonical)
+
+| Label | Usage |
+|-------|-------|
+| `priority:high` | Needs immediate attention |
+| `priority:medium` | Scheduled for this week |
+| `priority:low` | Backlog |
+| `type:config` | Configuration changes |
+| `type:integration` | Third-party integrations |
+| `blocked` | Waiting on something |
+
+### Hermes Tool Interface
+
+Once Linear MCP is configured, Hermes can:
+- "What are my high priority items?"
+- "Create an issue in Communication Hub to sync LifeRadar reminders"
+- "Mark the Google Calendar integration issue as done"
+- "What's blocked?"
+
+### Deprecation Path
+
+1. **Phase 5 start:** Add Linear MCP to `~/.hermes/mcp_config.yaml`
+2. **Immediate:** New tasks created via Linear MCP, not `planned_actions`
+3. **Optional:** Migrate existing `planned_actions` records to Linear issues (one-time script)
+4. **Future:** Drop `planned_actions` table or keep as read-only audit log
+
+### Open Questions
+
+- Does OpenClaw also use Linear, or keep its own task tracking?
+- Should LifeRadar reminders create Linear issues automatically?
+- Do you want to keep any data in `planned_actions` as historical?
 
 ---
-
-## Environment Variables
 
 ### Required
 
@@ -265,3 +339,55 @@ The `planned_actions` table is the foundation. Extensions:
 7. Phase 2: docker compose build life-radar-api && docker compose up -d life-radar-api
 8. Phase 3: Configure ~/.hermes/mcp_config.yaml to point at life-radar-api
 ```
+
+---
+
+## Test Plan
+
+This defines what "good enough" means for each subsystem. These criteria must be met before declaring a phase stable.
+
+### Messaging Runtime (Bakeoff)
+
+| Criterion | Threshold | Probe |
+|-----------|----------|------|
+| Continuous live sync | No gaps >15 min between runs | `runtime_probes.freshness_seconds` |
+| Decrypt success | ≥95% of events readable | `messaging_candidates.latest_decrypt_failures` |
+| Restart-safe persistence | Survives container restart without manual intervention | Manual restart test |
+| Bounded lag | ≤5 min event-to-DB latency | `runtime_probes.latest_freshness_seconds` |
+| Health metrics | Exposed in DB and logs | Query `runtime_probes` table |
+| Resource usage | ≤500MB RAM, ≤1 CPU | `docker stats` |
+
+### Memory System
+
+| Criterion | Threshold |
+|-----------|-----------|
+| One UUID linking | Raw event, canonical entity, embedding row, graph edges, external projections all share stable UUID |
+| Embedding sync | New messages create embeddings within 1 probe cycle |
+| Graph integrity | Edge queries return consistent results |
+
+### Product Behavior
+
+| Criterion | Threshold |
+|-----------|-----------|
+| `needs_read` vs `needs_reply` distinction | False positive rate <10% on sample of 50 conversations |
+| Obligation extraction | Explicit commitments detected from clear language patterns |
+| Reminder creation | Direct commands ("remind me...") create `reminders` records |
+| Calendar integration | User instructions create Google Calendar events |
+| Draft grounding | Generated drafts cite source message IDs |
+
+### Inspectability
+
+| Criterion | Threshold |
+|-----------|-----------|
+| Prioritization explainability | `conversations.metadata` shows triage scores and reasoning |
+| Memory influence | Query shows which memories affected a decision |
+| Reminder timing reasoning | `reminders.metadata` shows trigger conditions |
+| Projection readiness | `external_projections` shows sync status |
+
+### Known Areas Needing Refinement
+
+- Bridged group-chat behavior
+- Bot and bridge-message suppression
+- Undecrypted-event handling
+- Reply-worthiness thresholds by conversation size and participant type
+- Escalation into `important_now` and `follow_up_later`
