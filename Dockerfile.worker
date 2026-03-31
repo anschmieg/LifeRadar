@@ -51,6 +51,9 @@ COPY --from=rust-build /build/target/release/life-radar-matrix-rust-probe /usr/l
 # Copy probe scripts (entrypoint is run-probes.sh)
 COPY bin/ /opt/life-radar/bin/
 
+# Copy schema for bootstrap
+COPY schema/schema.sql /opt/life-radar/schema.sql
+
 RUN chmod +x /usr/local/bin/life-radar-matrix-rust-probe \
  && chmod +x /opt/life-radar/bin/*.sh \
  && chmod +x /opt/life-radar/bin/*.mjs
