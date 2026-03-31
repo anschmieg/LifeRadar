@@ -7,7 +7,7 @@ ingests messages from Matrix/Beeper (E2EE), Microsoft Graph (Outlook mail), and 
 Calendar, stores them in PostgreSQL/pgvector, and exposes everything via an API to
 power an AI agent (Hermes).
 
-**Migrated from:** `openclaw/overlay/life-radar/` ( NousResearch/Hermes-Agent#life-radar )
+**Migrated from:** `openclaw/overlay/life-radar/`
 
 ---
 
@@ -17,26 +17,25 @@ power an AI agent (Hermes).
 ┌──────────────────────────────────────────────────────────────┐
 │  Coolify                                                     │
 │  ┌─────────────────┐  ┌──────────────────────────────────┐  │
-│  │  life-radar-db  │  │  life-radar-worker (container)   │  │
+│  │  life-radar-db  │  │  life-radar-worker (container)    │  │
 │  │  (pgvector:pg17)│  │  ├─ Rust probe (Matrix E2EE)      │  │
-│  │                 │  │  ├─ graph-sync-mail.mjs (Outlook)│  │
-│  │                 │  │  ├─ google-calendar-reconcile    │  │
-│  │                 │  │  ├─ derive-needs-state.sh (triage)│  │
+│  │                 │  │  ├─ graph-sync-mail.mjs (Outlook) │  │
+│  │                 │  │  ├─ google-calendar-reconcile     │  │
+│  │                 │  │  ├─ derive-needs-state.sh (triage) │  │
 │  │                 │  │  └─ extract-memory.mjs            │  │
 │  └─────────────────┘  └──────────────┬───────────────────┘  │
 │                                      │                       │
 │  ┌───────────────────────────────────▼───────────────────┐  │
-│  │  life-radar-api  (Phase 2 — FastAPI)                  │  │
-│  │  Exposes: alerts, conversations, memories, calendar,    │  │
-│  │  tasks, send-message, semantic-search                  │  │
+│  │  life-radar-api  (Phase 2)                           │  │
+│  │  FastAPI · GET/POST · OpenAPI 3.1                     │  │
 │  └────────────────────────┬───────────────────────────────┘  │
 └───────────────────────────┼─────────────────────────────────┘
-                            │ HTTP/MCP
+                            │ HTTP
                             ▼
 ┌───────────────────────────────────────────────────────────────┐
 │  Hermes LXC (10.99.244.100)                                  │
 │  ├─ Hermes Agent (systemd gateway)                           │
-│  └─ Hermes MCP client → life-radar MCP server               │
+│  └─ Hermes MCP client → life-radar MCP server (Phase 3)    │
 └───────────────────────────────────────────────────────────────┘
 ```
 
@@ -66,13 +65,15 @@ Schema: `life_radar` (PostgreSQL + pgvector)
 
 ---
 
-## Phase 1 — Extraction & Standalone (DONE)
+## Phase 1 — Extraction & Standalone Docker
+
+**Status: DONE** (2026-03-31)
 
 - [x] Extracted all files from `openclaw/overlay/life-radar/`
 - [x] Removed hardcoded credentials from `docker-compose.yml`
-- [x] Created cleaned `.env.example` with all required variables
+- [x] Created `.env.example` with all required variables
 - [x] `schema.sql` — full pgvector schema, 15 tables
-- [x] `bin/run-probes.sh` — probe orchestrator (5min interval)
+- [x] `bin/run-probes.sh` — probe orchestrator (5 min interval)
 - [x] `bin/bootstrap.sh` — DB init + one-time migrations
 - [x] `bin/graph-sync-mail.mjs` — MSGraph delta sync (Outlook)
 - [x] `bin/google-calendar-reconcile.mjs` — bidirectional Google Calendar
@@ -85,125 +86,142 @@ Schema: `life_radar` (PostgreSQL + pgvector)
 - [x] `bin/probe-matrix-candidate.sh` — legacy nio probe for bakeoff
 - [x] `lib/runtime.mjs` — shared DB/OAuth/HTTP utilities
 - [x] `matrix-rust-probe/` — Rust binary using matrix-sdk for E2EE ingestion
+- [x] `Dockerfile.worker` — 2-stage build: Rust compilation + Node.js runtime
 - [x] `fixtures/msgraph/` — test fixtures for MSGraph sync
+- [x] Repo committed and pushed to GitHub
+
+### Volume Migration (required before first deploy)
+
+The OpenClaw deployment has Matrix identity data on host paths. Before standing up
+the standalone LifeRadar:
+
+1. Stop the OpenClaw `life-radar-worker` container (Matrix probe will stop ingesting)
+2. The following paths must be migrated to Docker named volumes:
+   - `/data/openclaw/config/.openclaw/identity/matrix-session.json` → `matrix-identity` volume
+   - `/data/openclaw/config/.openclaw/identity/matrix-rust-sdk-store/` → `matrix-identity` volume
+   - `/data/openclaw/config/.openclaw/identity/beeper-e2e-keys.txt` → `matrix-identity` volume
+   - `/data/openclaw/config/.openclaw/identity/.e2ee-export-passphrase` → `matrix-identity` volume
+3. Update `.env` with the existing `life-radar-db` password (to reuse existing data)
+4. Set `LIFE_RADAR_DB_PASSWORD` to the password currently used by the running
+   `life-radar-db` container on Oracle
+5. Point `MATRIX_SESSION_PATH` etc. at the new volume mounts, not the old host paths
+
+The `matrix-rust-probe` binary at `/usr/local/bin/life-radar-matrix-rust-probe` in the
+OpenClaw container is the compiled form of `matrix-rust-probe/` in this repo. The
+`Dockerfile.worker` compiles it fresh during the Docker build.
 
 ---
 
-## Phase 2 — API Server (NEXT)
+## Phase 2 — API Server
+
+**Status: TODO** | **Owner:** Hermes agent
 
 **Goal:** Expose the DB via a FastAPI HTTP server consumed by Hermes.
 
-### Technology Decision
+### Technology
 
-- **FastAPI** — native async, OpenAPI schema auto-generation, Pydantic validation
-- **flask** was considered but lacks built-in OpenAPI generation
-- After FastAPI exposes OpenAPI → use **FastAPI-to-MCP bridge** or
-  **openapi-to-mcp** to auto-generate MCP server from the same spec
-
-**Key libraries:**
-- `fastapi` + `uvicorn` — API server
-- `asyncpg` — async PostgreSQL driver (better for connection pooling than psql subprocess)
-- `pydantic` — request/response models
-- `openapi-to-mcp` or custom MCP transport over stdio
+- **FastAPI** + **uvicorn** — native async, OpenAPI 3.1 auto-generation, Pydantic validation
+- **asyncpg** — async PostgreSQL driver with connection pooling
+- **pydantic** — request/response models
 
 ### Endpoints
 
 ```
-GET  /health                          — liveness check
-GET  /alerts                          — urgent triage items
-GET  /conversations                   — search/filter inbox
-GET  /conversations/{id}              — conversation detail + messages
-GET  /memories                        — query memory records
-GET  /tasks                           — planned_actions list/filter
-POST /tasks                           — create task
-GET  /calendar/events                 — read Google Calendar
-POST /calendar/events                 — upsert calendar event
-POST /messages/send                   — send Matrix/Outlook message (user-approved)
-GET  /search                          — semantic search over memories/conversations
-GET  /probe-status                    — probe health metrics
+GET   /health               liveness check
+GET   /alerts               urgent triage items (needs_reply=True, priority≥0.8)
+GET   /conversations        search/filter inbox (source, priority, needs_reply)
+GET   /conversations/{id}   full conversation with messages
+GET   /memories             query memory records (tag, entity, keyword)
+GET   /tasks                list planned_actions
+POST  /tasks                create task
+GET   /calendar/events      read Google Calendar (date range)
+POST  /calendar/events      upsert calendar event
+POST  /messages/send        send Matrix/Outlook message (user-approved only)
+GET   /search               semantic search over memories + conversations
+GET   /probe-status         probe health + last-run timestamps
 ```
 
 ### TODO
 
-- [ ] Create `api/` directory with FastAPI app
-- [ ] Define Pydantic models for all response types
-- [ ] Implement each endpoint with asyncpg
+- [ ] Create `api/` directory with FastAPI application
+- [ ] Define Pydantic models for all request/response types
+- [ ] Implement each endpoint with `asyncpg`
 - [ ] Add OpenAPI route at `/openapi.json`
-- [ ] Write `Dockerfile.api` (or merge into `Dockerfile.worker`)
-- [ ] Add auth (API key or HMAC signature for Hermes→API calls)
+- [ ] Write `Dockerfile.api` (or extend `Dockerfile.worker` with multi-target)
+- [ ] Add API key auth (HMAC or static key for Hermes → API calls)
+- [ ] Add Docker Compose service entry for `life-radar-api`
+- [ ] Update `.env.example` with API server port variable
+
+### OpenAPI → MCP Strategy
+
+FastAPI auto-generates OpenAPI 3.1 at `/openapi.json`. Use `openapi-to-mcp` to
+auto-generate the MCP tool schema from the same spec — define the API once,
+expose it both as HTTP and as MCP tools.
 
 ---
 
 ## Phase 3 — MCP Server
 
-**Goal:** Hermes speaks MCP natively. MCP server = wrapper around FastAPI.
+**Status: TODO** | **Owner:** Hermes agent
 
-### Approach: OpenAPI → MCP
+**Goal:** Hermes connects to LifeRadar as an MCP server.
 
-1. FastAPI generates OpenAPI 3.1 spec at `/openapi.json`
-2. `openapi-to-mcp` CLI or library consumes the spec and generates MCP tools
-3. MCP server runs as a sidecar or embedded stdio server
-4. Hermes connects via `mcp` tool config in `~/.hermes/mcp_config.yaml`
+### Approach
 
-**Alternatives considered:**
-- `fastapi-mcp` — FastAPI decorator to expose as MCP, less flexible
-- Manual MCP server — more work but full control over tool definitions
+1. FastAPI generates OpenAPI 3.1 at `/openapi.json`
+2. `openapi-to-mcp` CLI generates MCP tool definitions from the spec
+3. MCP server runs as a stdio sidecar (same container as API, or separate)
+4. Hermes `mcp_config.yaml` points to the MCP server endpoint
 
-**Key insight:** Define the tool schema once in FastAPI Pydantic models → auto-generate MCP tool list from the same spec.
+**Alternative:** `fastapi-mcp` decorator — simpler but less flexible.
 
-### Tools (MCP)
+### MCP Tools (auto-generated)
 
 ```
-alerts          — GET /alerts
-conversations   — GET /conversations
-conversation    — GET /conversations/{id}
-memories        — GET /memories
-tasks           — GET/POST /tasks
-calendar-events — GET/POST /calendar/events
-send-message    — POST /messages/send (user-approved)
-search          — GET /search
-probe-status    — GET /probe-status
+alerts           GET  /alerts
+conversations    GET  /conversations
+conversation     GET  /conversations/{id}
+memories         GET  /memories
+tasks            GET/POST /tasks
+calendar-events  GET/POST /calendar/events
+send-message     POST /messages/send
+search           GET  /search
+probe-status     GET  /probe-status
 ```
 
 ### TODO
 
-- [ ] Create `mcp/` directory with MCP server
-- [ ] Implement stdio MCP transport
-- [ ] Bridge FastAPI responses → MCP tool results
+- [ ] Verify `openapi-to-mcp` compatibility with FastAPI 3.1 output
+- [ ] Create `mcp/` directory with MCP stdio server entrypoint
+- [ ] Bridge FastAPI HTTP responses → MCP JSON-RPC tool results
 - [ ] Add MCP config snippet to `~/.hermes/mcp_config.yaml`
-- [ ] Test end-to-end: Hermes → MCP → API → DB
+- [ ] Test end-to-end: Hermes → MCP → FastAPI → PostgreSQL
 
 ---
 
-## Phase 4 — On-Demand Agent (Future)
+## Phase 4 — On-Demand Agent Sessions (Future)
 
-A spawnable agent container (or subprocess) that can be launched by the triage
-worker or by the user for deep-dive tasks:
+Spawnable agent sessions for deep-dive tasks triggered by triage or user request:
 
-- **Summarization** — "summarize the last 10 messages from @person"
+- **Summarize** — "summarize the last 10 messages from @person"
 - **Draft reply** — "write a reply to the most urgent message"
-- **Research** — "what does the conversation with Dr. Zattler say about X?"
+- **Research** — "what does the Zattler conversation say about the Canale property?"
 - **Task breakdown** — "turn this vague note into actionable subtasks"
 
-Implementation: separate FastAPI endpoint `POST /agent/sessions` that spins up
-a lightweight agent subprocess with conversation context injected.
+Implementation: `POST /agent/sessions` spins up a lightweight agent subprocess with
+relevant conversation context injected via system prompt.
 
 ---
 
 ## Phase 5 — Task Management (Future)
 
-The `planned_actions` table is the foundation. Currently:
-
-- Actions are created from direct notes (`capture-direct-note.mjs`)
-- Actions are synced bidirectionally with Google Calendar
-
-Future extensions:
+The `planned_actions` table is the foundation. Extensions:
 
 - Natural language task creation via agent
 - Priority/energy/effort scoring (extend v3 triage to tasks)
-- Recurring tasks (cadence profiles from reminders)
-- Dependencies between tasks
-- Integration with Linear or other project management tools
+- Recurring tasks (cadence profiles from `reminders`)
+- Task dependencies
+- Linear or Taskade integration
 
 ---
 
@@ -213,7 +231,7 @@ Future extensions:
 
 | Variable | Description |
 |---|---|
-| `LIFE_RADAR_DB_PASSWORD` | PostgreSQL password |
+| `LIFE_RADAR_DB_PASSWORD` | PostgreSQL password (reuse existing to keep data) |
 | `MATRIX_SESSION_PATH` | Matrix session JSON file |
 | `MATRIX_E2EE_EXPORT_PATH` | Beeper E2EE key export |
 | `MATRIX_E2EE_EXPORT_PASSPHRASE_PATH` | Beeper E2EE passphrase |
@@ -234,27 +252,16 @@ Future extensions:
 
 ---
 
-## Deployment
-
-Deployed on Coolify as a standalone Docker Compose application.
+## Deployment Checklist
 
 ```
-cd ~/Projects/LifeRadar
-cp .env.example .env
-# Fill in credentials
-docker compose up -d
+1. Volume migration — copy Matrix identity files from OpenClaw host paths to the
+   new Docker named volumes (matrix-identity). See Phase 1 Migration Notes.
+2. Set LIFE_RADAR_DB_PASSWORD to the existing database password (preserve data)
+3. Fill in remaining .env variables (MSGraph, Google Calendar if used)
+4. docker compose build life-radar-worker
+5. docker compose up -d life-radar-db life-radar-worker
+6. Verify probes run: docker compose logs life-radar-worker
+7. Phase 2: docker compose build life-radar-api && docker compose up -d life-radar-api
+8. Phase 3: Configure ~/.hermes/mcp_config.yaml to point at life-radar-api
 ```
-
-The worker container runs `run-probes.sh` on a 5-minute loop.
-The API container (Phase 2+) runs `uvicorn api.main:app`.
-
----
-
-## Migration Notes
-
-- The original implementation ran inside the OpenClaw Docker stack
-- Identity files (Matrix session, E2EE keys) must be migrated from the OpenClaw
-  host volumes (`/data/openclaw/config`) to the new `matrix-identity` Docker volume
-- The existing `life-radar-db` Docker volume on Oracle can be reused; set
-  `LIFE_RADAR_DB_PASSWORD` to the existing password
-- The `life_radar_db` container name changes to `life-radar-db` in standalone
