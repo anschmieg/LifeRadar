@@ -1,0 +1,69 @@
+services:
+  life-radar-db:
+    image: pgvector/pgvector:pg17
+    container_name: life-radar-db
+    environment:
+      POSTGRES_DB: ${LIFE_RADAR_DB_NAME:-life_radar}
+      POSTGRES_USER: ${LIFE_RADAR_DB_USER:-life_radar}
+      POSTGRES_PASSWORD: ${LIFE_RADAR_DB_PASSWORD:?LifeRadar DB password required}
+    volumes:
+      - life-radar-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${LIFE_RADAR_DB_USER:-life_radar} -d ${LIFE_RADAR_DB_NAME:-life_radar}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      - life-radar-net
+
+  life-radar-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: life-radar-worker
+    environment:
+      HOME: /app
+      LIFE_RADAR_DB_HOST: life-radar-db
+      LIFE_RADAR_DB_PORT: "5432"
+      LIFE_RADAR_DB_NAME: ${LIFE_RADAR_DB_NAME:-life_radar}
+      LIFE_RADAR_DB_USER: ${LIFE_RADAR_DB_USER:-life_radar}
+      LIFE_RADAR_DB_PASSWORD: ${LIFE_RADAR_DB_PASSWORD:?LifeRadar DB password required}
+      LIFE_RADAR_PROBE_INTERVAL_SEC: ${LIFE_RADAR_PROBE_INTERVAL_SEC:-300}
+      MATRIX_SESSION_PATH: ${MATRIX_SESSION_PATH:?Matrix session file required}
+      MATRIX_RUST_SESSION_PATH: ${MATRIX_RUST_SESSION_PATH:-${MATRIX_SESSION_PATH}}
+      MATRIX_RUST_STORE: ${MATRIX_RUST_STORE:-/app/identity/matrix-rust-sdk-store}
+      MATRIX_E2EE_EXPORT_PATH: ${MATRIX_E2EE_EXPORT_PATH:?Matrix E2EE export file required}
+      MATRIX_E2EE_EXPORT_PASSPHRASE_PATH: ${MATRIX_E2EE_EXPORT_PASSPHRASE_PATH:?Matrix E2EE passphrase file required}
+      MATRIX_RUST_KEY_IMPORT_MARKER: ${MATRIX_RUST_KEY_IMPORT_MARKER:-/app/identity/matrix-rust-sdk-store/room-key-import-marker.json}
+      LIFE_RADAR_MATRIX_RUST_CANDIDATE_ID: ${LIFE_RADAR_MATRIX_RUST_CANDIDATE_ID:-matrix-rust-sdk}
+      LIFE_RADAR_MATRIX_RUST_CANDIDATE_TYPE: ${LIFE_RADAR_MATRIX_RUST_CANDIDATE_TYPE:-matrix-native}
+      LIFE_RADAR_MATRIX_RUST_TIMEOUT_SEC: ${LIFE_RADAR_MATRIX_RUST_TIMEOUT_SEC:-20}
+      MSGRAPH_CLIENT_ID: ${MSGRAPH_CLIENT_ID:-}
+      MSGRAPH_CLIENT_SECRET: ${MSGRAPH_CLIENT_SECRET:-}
+      MSGRAPH_TENANT_ID: ${MSGRAPH_TENANT_ID:-}
+      MSGRAPH_REFRESH_TOKEN: ${MSGRAPH_REFRESH_TOKEN:-}
+      GOOGLE_CALENDAR_CLIENT_ID: ${GOOGLE_CALENDAR_CLIENT_ID:-}
+      GOOGLE_CALENDAR_CLIENT_SECRET: ${GOOGLE_CALENDAR_CLIENT_SECRET:-}
+      GOOGLE_CALENDAR_REFRESH_TOKEN: ${GOOGLE_CALENDAR_REFRESH_TOKEN:-}
+      GOOGLE_CALENDAR_ID: ${GOOGLE_CALENDAR_ID:-primary}
+    volumes:
+      - matrix-identity:/app/identity
+      - matrix-workspace:/app/workspace
+    depends_on:
+      life-radar-db:
+        condition: service_healthy
+    init: true
+    restart: unless-stopped
+    entrypoint: ["/opt/life-radar/bin/run-probes.sh"]
+    networks:
+      - life-radar-net
+
+volumes:
+  life-radar-postgres:
+  matrix-identity:
+  matrix-workspace:
+
+networks:
+  life-radar-net:
+    driver: bridge

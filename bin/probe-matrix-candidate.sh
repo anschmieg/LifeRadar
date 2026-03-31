@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${LIFE_RADAR_DB_HOST:=life-radar-db}"
+: "${LIFE_RADAR_DB_PORT:=5432}"
+: "${LIFE_RADAR_DB_NAME:=life_radar}"
+: "${LIFE_RADAR_DB_USER:=life_radar}"
+: "${LIFE_RADAR_DB_PASSWORD:=change-me-in-env}"
+: "${LIFE_RADAR_MATRIX_CANDIDATE_ID:=matrix-nio-current}"
+: "${LIFE_RADAR_MATRIX_CANDIDATE_TYPE:=matrix-native}"
+: "${MATRIX_MESSAGES_DB:=/home/node/.openclaw/workspace/workspace_data/messages.db}"
+: "${MATRIX_SESSION_PATH:=/home/node/.openclaw/identity/matrix-session.json}"
+: "${MATRIX_NIO_STORE:=/home/node/.openclaw/identity/nio-store}"
+: "${LIFE_RADAR_REPORT_DIR:=/home/node/.openclaw/workspace/life-radar/reports}"
+
+export PGPASSWORD="$LIFE_RADAR_DB_PASSWORD"
+mkdir -p "$LIFE_RADAR_REPORT_DIR"
+
+observed_at="$(date -u +%FT%TZ)"
+status="fail"
+notes=""
+notes_sql="NULL"
+latency_ms=0
+freshness_seconds=0
+running_processes=0
+total_events=0
+decrypt_failures=0
+encrypted_non_text=0
+max_timestamp=0
+min_timestamp=0
+
+if [ -f "$MATRIX_MESSAGES_DB" ]; then
+  metrics="$(sqlite3 "$MATRIX_MESSAGES_DB" "select count(*), coalesce(sum(case when instr(body,'[decryption failed:')=1 then 1 else 0 end),0), coalesce(sum(case when instr(body,'[encrypted non-text:')=1 then 1 else 0 end),0), coalesce(max(timestamp),0), coalesce(min(timestamp),0) from messages;")"
+  IFS='|' read -r total_events decrypt_failures encrypted_non_text max_timestamp min_timestamp <<<"$metrics"
+fi
+
+if [ "$max_timestamp" -gt 0 ]; then
+  now_epoch="$(date -u +%s)"
+  freshness_seconds=$((now_epoch - max_timestamp))
+fi
+
+running_processes="$( (ps -eo args= | grep -E 'matrix_(e2e_daemon|triage_worker|sync)' | grep -v grep | wc -l | tr -d ' ') || true )"
+
+if [ ! -f "$MATRIX_MESSAGES_DB" ]; then
+  notes="messages.db missing"
+elif [ ! -f "$MATRIX_SESSION_PATH" ]; then
+  notes="matrix session missing"
+elif [ ! -d "$MATRIX_NIO_STORE" ]; then
+  notes="nio store missing"
+elif [ "$total_events" -eq 0 ]; then
+  notes="no events ingested"
+elif [ "$running_processes" -eq 0 ]; then
+  status="warn"
+  notes="message corpus exists but no matrix runtime process is running"
+elif [ "$freshness_seconds" -gt 900 ]; then
+  status="warn"
+  notes="runtime is stale beyond 15 minutes"
+else
+  status="ok"
+  notes="runtime is live enough for continued evaluation"
+fi
+
+if [ -n "$notes" ]; then
+  notes_sql="\$\$${notes//$/\\$}\$\$"
+fi
+
+psql \
+  --host "$LIFE_RADAR_DB_HOST" \
+  --port "$LIFE_RADAR_DB_PORT" \
+  --username "$LIFE_RADAR_DB_USER" \
+  --dbname "$LIFE_RADAR_DB_NAME" \
+  --set ON_ERROR_STOP=1 <<SQL
+INSERT INTO life_radar.runtime_probes (
+  candidate_id,
+  candidate_type,
+  status,
+  observed_at,
+  latency_ms,
+  freshness_seconds,
+  total_events,
+  decrypt_failures,
+  encrypted_non_text,
+  running_processes,
+  metadata,
+  notes
+) VALUES (
+  '${LIFE_RADAR_MATRIX_CANDIDATE_ID}',
+  '${LIFE_RADAR_MATRIX_CANDIDATE_TYPE}',
+  '${status}',
+  '${observed_at}',
+  ${latency_ms},
+  ${freshness_seconds},
+  ${total_events},
+  ${decrypt_failures},
+  ${encrypted_non_text},
+  ${running_processes},
+  jsonb_build_object(
+    'messages_db', '${MATRIX_MESSAGES_DB}',
+    'session_path', '${MATRIX_SESSION_PATH}',
+    'nio_store', '${MATRIX_NIO_STORE}',
+    'max_timestamp', ${max_timestamp},
+    'min_timestamp', ${min_timestamp}
+  ),
+  ${notes_sql}
+);
+
+INSERT INTO life_radar.messaging_candidates (
+  candidate_id,
+  candidate_type,
+  last_status,
+  last_probe_at,
+  latest_freshness_seconds,
+  latest_total_events,
+  latest_decrypt_failures,
+  latest_encrypted_non_text,
+  latest_running_processes,
+  latest_notes,
+  metadata,
+  updated_at
+) VALUES (
+  '${LIFE_RADAR_MATRIX_CANDIDATE_ID}',
+  '${LIFE_RADAR_MATRIX_CANDIDATE_TYPE}',
+  '${status}',
+  '${observed_at}',
+  ${freshness_seconds},
+  ${total_events},
+  ${decrypt_failures},
+  ${encrypted_non_text},
+  ${running_processes},
+  ${notes_sql},
+  jsonb_build_object(
+    'messages_db', '${MATRIX_MESSAGES_DB}',
+    'session_path', '${MATRIX_SESSION_PATH}',
+    'nio_store', '${MATRIX_NIO_STORE}'
+  ),
+  NOW()
+)
+ON CONFLICT (candidate_id) DO UPDATE SET
+  last_status = EXCLUDED.last_status,
+  last_probe_at = EXCLUDED.last_probe_at,
+  latest_freshness_seconds = EXCLUDED.latest_freshness_seconds,
+  latest_total_events = EXCLUDED.latest_total_events,
+  latest_decrypt_failures = EXCLUDED.latest_decrypt_failures,
+  latest_encrypted_non_text = EXCLUDED.latest_encrypted_non_text,
+  latest_running_processes = EXCLUDED.latest_running_processes,
+  latest_notes = EXCLUDED.latest_notes,
+  metadata = EXCLUDED.metadata,
+  updated_at = NOW();
+SQL
+
+report_path="$LIFE_RADAR_REPORT_DIR/matrix-bakeoff-latest.md"
+mkdir -p "$LIFE_RADAR_REPORT_DIR"
+tmp_report="$(mktemp "$LIFE_RADAR_REPORT_DIR/.matrix-bakeoff-latest.XXXXXX")"
+cat > "$tmp_report" <<REPORT
+# Matrix Candidate Report
+
+- observed_at: ${observed_at}
+- candidate_id: ${LIFE_RADAR_MATRIX_CANDIDATE_ID}
+- candidate_type: ${LIFE_RADAR_MATRIX_CANDIDATE_TYPE}
+- status: ${status}
+- notes: ${notes:-none}
+- total_events: ${total_events}
+- decrypt_failures: ${decrypt_failures}
+- encrypted_non_text: ${encrypted_non_text}
+- freshness_seconds: ${freshness_seconds}
+- running_processes: ${running_processes}
+- messages_db: ${MATRIX_MESSAGES_DB}
+- session_path: ${MATRIX_SESSION_PATH}
+- nio_store: ${MATRIX_NIO_STORE}
+REPORT
+mv "$tmp_report" "$report_path"

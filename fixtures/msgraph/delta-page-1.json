@@ -1,0 +1,39 @@
+{
+  "value": [
+    {
+      "id": "mail-1",
+      "conversationId": "thread-1",
+      "subject": "Need your input",
+      "from": {"emailAddress": {"name": "Evita", "address": "evita@example.com"}},
+      "toRecipients": [{"emailAddress": {"name": "Adrian Schmieg", "address": "adrian@example.com"}}],
+      "ccRecipients": [],
+      "receivedDateTime": "2026-03-13T08:00:00Z",
+      "lastModifiedDateTime": "2026-03-13T08:01:00Z",
+      "bodyPreview": "Can you reply today?",
+      "isRead": false,
+      "webLink": "https://outlook.office.com/mail/thread-1",
+      "internetMessageId": "<mail-1@example.com>",
+      "inferenceClassification": "focused",
+      "categories": ["Important"],
+      "parentFolderId": "inbox"
+    },
+    {
+      "id": "mail-2",
+      "conversationId": "thread-2",
+      "subject": "Receipt",
+      "from": {"emailAddress": {"name": "Store", "address": "no-reply@store.example"}},
+      "toRecipients": [{"emailAddress": {"name": "Adrian Schmieg", "address": "adrian@example.com"}}],
+      "ccRecipients": [],
+      "receivedDateTime": "2026-03-13T07:00:00Z",
+      "lastModifiedDateTime": "2026-03-13T07:00:30Z",
+      "bodyPreview": "Thanks for your purchase.",
+      "isRead": false,
+      "webLink": "https://outlook.office.com/mail/thread-2",
+      "internetMessageId": "<mail-2@example.com>",
+      "inferenceClassification": "other",
+      "categories": [],
+      "parentFolderId": "inbox"
+    }
+  ],
+  "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailFolders/Inbox/messages/delta?$deltatoken=fixture"
+}

@@ -1,0 +1,55 @@
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+credentials.json
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+venv/
+.venv/
+env/
+.env/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+.yarn-integrity
+
+# Rust
+/target/
+**/target/
+Cargo.lock
+matrix-rust-probe/target/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Docker
+.docker/
+
+# Test coverage
+.coverage
+htmlcov/
+*.cover
+
+# Temp files
+*.tmp
+*.bak
+*.cache
