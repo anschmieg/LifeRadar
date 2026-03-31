@@ -20,7 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /build
 
 # Build only the binary (not tests/docs), parallel jobs
-COPY matrix-rust-probe/Cargo.toml matrix-rust-probe/src/ ./probe/
+COPY matrix-rust-probe/ ./probe/
 WORKDIR /build/probe
 
 # Cache cargo registry between builds
