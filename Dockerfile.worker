@@ -1,6 +1,6 @@
 # ============================================================
-# LifeRadar Worker
-# Node.js probe orchestrator + Rust E2EE Matrix probe
+# LifeRadar Worker + API Server
+# Node.js probe orchestrator + Rust E2EE Matrix probe + FastAPI
 # ============================================================
 
 # ---- Stage 1: Rust build ----
@@ -33,15 +33,18 @@ RUN ls -la /build/target/release/life-radar-matrix-rust-probe || ls -la /build/t
 RUN strip /build/target/release/life-radar-matrix-rust-probe 2>/dev/null || true
 
 
-# ---- Stage 2: Node.js runtime ----
+# ---- Stage 2: Node.js runtime + Python 3 API server ----
 FROM node:22.11-bookworm
 
 ARG TARGETARCH=amd64
 
+# Install Python 3.12 + pip for FastAPI
 RUN apt-get update && apt-get install -y --no-install-recommends \
     postgresql-client \
     curl \
     ca-certificates \
+    python3 \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -58,6 +61,13 @@ COPY lib/ /opt/life-radar/lib/
 # Copy schema for bootstrap
 COPY schema/schema.sql /opt/life-radar/schema.sql
 
+# Copy FastAPI API code
+COPY api/ /opt/life-radar/api/
+COPY api/requirements.txt /opt/life-radar/requirements.txt
+
+# Install Python dependencies for FastAPI
+RUN pip3 install --break-system-packages -r /opt/life-radar/requirements.txt
+
 RUN chmod +x /usr/local/bin/life-radar-matrix-rust-probe \
  && chmod +x /opt/life-radar/bin/*.sh \
  && chmod +x /opt/life-radar/bin/*.mjs
@@ -65,4 +75,8 @@ RUN chmod +x /usr/local/bin/life-radar-matrix-rust-probe \
 # Identity + workspace volumes (bind-mounted at runtime)
 VOLUME ["/app/identity", "/app/workspace"]
 
-ENTRYPOINT ["/opt/life-radar/bin/run-probes.sh"]
+# Expose FastAPI port
+EXPOSE 8000
+
+# Entry point dispatches based on LIFE_RADAR_SERVICE env var
+ENTRYPOINT ["/opt/life-radar/bin/run-api-or-worker.sh"]
