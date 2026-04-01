@@ -52,6 +52,9 @@ COPY --from=rust-build /build/target/release/life-radar-matrix-rust-probe /usr/l
 # Copy probe scripts (entrypoint is run-probes.sh)
 COPY bin/ /opt/life-radar/bin/
 
+# Copy lib/ for Node.js runtime modules (runtime.mjs, etc.)
+COPY lib/ /opt/life-radar/lib/
+
 # Copy schema for bootstrap
 COPY schema/schema.sql /opt/life-radar/schema.sql
 
