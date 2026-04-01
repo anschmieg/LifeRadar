@@ -21,4 +21,4 @@ ENV PYTHONUNBUFFERED=1
 ENV LIFE_RADAR_API_URL=http://host.docker.internal:8000
 
 # Run via stdio — MCP servers use stdio transport
-CMD ["python", "-m", "mcp-server.server"]
+CMD ["python", "mcp-server/server.py"]
