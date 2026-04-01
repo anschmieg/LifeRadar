@@ -23,9 +23,9 @@ WORKDIR /build
 COPY matrix-rust-probe/ ./probe/
 
 # Build from /build so binary lands at /build/target/release/
-# Cache cargo registry between builds
+# --target-dir is relative to WORKDIR (/build), not the manifest location
 RUN <<EOF
-    cargo build --release --bin life-radar-matrix-rust-probe --manifest-path /build/probe/Cargo.toml 2>&1
+    cargo build --release --bin life-radar-matrix-rust-probe --manifest-path /build/probe/Cargo.toml --target-dir /build/target 2>&1
 EOF
 
 # Verify binary exists, then strip
