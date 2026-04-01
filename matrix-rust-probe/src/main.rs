@@ -919,7 +919,7 @@ async fn try_sdk_ingest(cfg: &ProbeConfig) -> Result<String> {
 
     let conn_str = format!(
         "host={} port={} user={} password=*** dbname={}",
-        cfg.db_host, cfg.db_port, cfg.db_user, cfg.db_password, cfg.db_name
+        cfg.db_host, cfg.db_port, cfg.db_user, cfg.db_name
     );
     let (db, connection) = tokio_postgres::connect(&conn_str, NoTls)
         .await
@@ -981,12 +981,13 @@ async fn try_sdk_ingest(cfg: &ProbeConfig) -> Result<String> {
     let mut total_events = 0;
     let mut latest_seen = String::new();
     let self_user_id = client.user_id();
+    let self_user_id_str = self_user_id.as_deref().map(|id| id.as_str());
 
     for room in client.joined_rooms() {
         let room_id = room.room_id().to_string();
         let room_name = resolve_room_name(&room, self_user_id).await;
 
-        let room_events = fetch_room_history(&room, self_user_id.as_deref(), None)
+        let room_events = fetch_room_history(&room, self_user_id_str, None)
             .await
             .unwrap_or_default();
 
