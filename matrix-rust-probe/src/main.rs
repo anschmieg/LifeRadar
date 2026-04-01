@@ -14,6 +14,7 @@ use matrix_sdk::{
     store::RoomLoadSettings,
     Client, SessionMeta, SessionTokens,
 };
+use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio_postgres::NoTls;
@@ -451,6 +452,459 @@ async fn inspect_recent_rooms(cfg: &ProbeConfig) -> Result<RecentRoomsReport> {
 }
 
 async fn ingest_live_history(cfg: &ProbeConfig) -> Result<String> {
+    // Try SDK ingest first; on failure, fall back to pure HTTP
+    match try_sdk_ingest(cfg).await {
+        Ok(result) => return Ok(result),
+        Err(ref e) => {
+            eprintln!("SDK ingest failed ({}), falling back to HTTP sync: {}", e.root_cause(), e);
+            return ingest_via_http(cfg).await;
+        }
+    }
+}
+
+async fn ingest_via_http(cfg: &ProbeConfig) -> Result<String> {
+    // Pure HTTP fallback: bypasses SDK sync_once entirely
+    // Uses reqwest for HTTP + serde_json::Value for flexible parsing
+
+    let session_json = fs::read_to_string(&cfg.session_path)
+        .with_context(|| format!("failed to read session at {}", cfg.session_path.display()))?;
+    let session_file: SessionFile = serde_json::from_str(&session_json)
+        .context("invalid matrix session json")?;
+
+    let http_client = HttpClient::builder()
+        .user_agent("life-radar-matrix-probe/0.1.0")
+        .timeout(Duration::from_secs(cfg.timeout_seconds))
+        .build()
+        .context("failed to build HTTP client")?;
+
+    let mut next_batch = session_file.next_batch.clone();
+    let mut total_rooms = 0usize;
+    let mut total_events = 0usize;
+    let mut latest_seen = String::new();
+    let self_user_id = session_file.user_id.clone();
+
+    // Connect to DB
+    let conn_str = format!(
+        "host={} port={} user={} password={} dbname={}",
+        cfg.db_host, cfg.db_port, cfg.db_user, cfg.db_password, cfg.db_name
+    );
+    let (db, connection) = tokio_postgres::connect(&conn_str, NoTls)
+        .await
+        .context("failed to connect to life-radar postgres for HTTP ingest")?;
+    tokio::spawn(async move {
+        if let Err(err) = connection.await {
+            eprintln!("postgres connection error: {err}");
+        }
+    });
+
+    let upsert_conversation = db
+        .prepare(
+            "insert into life_radar.conversations (
+                source, external_id, account_id, title, participants, last_event_at, metadata
+             ) values ($1,$2,$3,$4,$5::text::jsonb,$6::text::timestamptz,$7::text::jsonb)
+             on conflict (source, external_id) do update set
+                account_id = coalesce(excluded.account_id, life_radar.conversations.account_id),
+                title = excluded.title,
+                participants = excluded.participants,
+                last_event_at = greatest(
+                    coalesce(life_radar.conversations.last_event_at, to_timestamp(0)),
+                    coalesce(excluded.last_event_at, to_timestamp(0))
+                ),
+                metadata = life_radar.conversations.metadata || excluded.metadata,
+                updated_at = now()
+             returning id::text",
+        )
+        .await?;
+    let upsert_event = db
+        .prepare(
+            "insert into life_radar.message_events (
+                conversation_id, source, external_id, sender_id, sender_label, occurred_at,
+                content_text, content_json, is_inbound, provenance
+             ) values (
+                (select id from life_radar.conversations where source = 'matrix' and external_id = $1::text),
+                $2,$3,$4,$5,$6::text::timestamptz,$7,$8::text::jsonb,$9,$10::text::jsonb
+             )
+             on conflict (source, external_id) do update set
+                conversation_id = excluded.conversation_id,
+                sender_id = excluded.sender_id,
+                sender_label = excluded.sender_label,
+                occurred_at = excluded.occurred_at,
+                content_text = excluded.content_text,
+                content_json = excluded.content_json,
+                is_inbound = excluded.is_inbound,
+                provenance = life_radar.message_events.provenance || excluded.provenance,
+                updated_at = now()",
+        )
+        .await?;
+    let upsert_runtime_metadata = db
+        .prepare(
+            "insert into life_radar.runtime_metadata (key, value)
+             values ($1, $2::text::jsonb)
+             on conflict (key) do update set value = excluded.value, updated_at = now()",
+        )
+        .await?;
+
+    // HTTP sync loop — call /_matrix/client/v3/sync
+    let base_url = session_file.homeserver.trim_end_matches('/');
+
+    // Collect all joined room IDs from sync responses
+    let mut joined_room_ids: Vec<String> = Vec::new();
+
+    // Do one initial sync to get room list
+    let sync_url = if let Some(ref token) = next_batch {
+        format!("{}/_matrix/client/v3/sync?_since={}", base_url, token)
+    } else {
+        format!("{}/_matrix/client/v3/sync", base_url)
+    };
+
+    eprintln!("HTTP sync request to {}", sync_url);
+    let resp = http_client
+        .get(&sync_url)
+        .header("Authorization", format!("Bearer {}", session_file.access_token))
+        .send()
+        .await
+        .context("http sync request failed")?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("HTTP sync returned {}: {}", status, body);
+    }
+
+    let sync_body: Value = resp.json().await.context("failed to parse sync response as JSON")?;
+
+    next_batch = sync_body
+        .get("next_batch")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    // Extract joined rooms from sync response
+    if let Some(rooms) = sync_body.get("rooms") {
+        if let Some(join) = rooms.get("join") {
+            if let Some(rooms_obj) = join.as_object() {
+                for (room_id, room_data) in rooms_obj {
+                    joined_room_ids.push(room_id.clone());
+
+                    // Extract timeline events from this room's initial sync
+                    if let Some(timeline) = room_data.get("timeline") {
+                        if let Some(events) = timeline.get("events") {
+                            if let Some(arr) = events.as_array() {
+                                for event_val in arr {
+                                    // Process event — extract message events
+                                    if let Some(processed) = http_parse_event(event_val, &self_user_id) {
+                                        if processed.occurred_at > latest_seen {
+                                            latest_seen = processed.occurred_at.clone();
+                                        }
+                                        total_events += 1;
+                                        // Ingest event directly to DB (room must already be upserted)
+                                        // We'll upsert the room first, then events
+                                        let room_name = http_resolve_room_name(&http_client, &session_file.access_token, &base_url, room_id).await;
+                                        let participants_json = "[]".to_string();
+
+                                        let metadata_json = serde_json::json!({
+                                            "direct_runtime": "matrix-http-fallback",
+                                            "live_history_ingest": true,
+                                            "source": "sync_timeline"
+                                        }).to_string();
+
+                                        db.query_one(
+                                            &upsert_conversation,
+                                            &[
+                                                &"matrix",
+                                                room_id,
+                                                &Some(session_file.user_id.clone()),
+                                                &room_name,
+                                                &participants_json,
+                                                &processed.occurred_at,
+                                                &metadata_json,
+                                            ],
+                                        )
+                                        .await
+                                        .ok();
+
+                                        db.execute(
+                                            &upsert_event,
+                                            &[
+                                                room_id,
+                                                &"matrix",
+                                                &processed.external_id,
+                                                &Some(processed.sender_id.clone()),
+                                                &Some(processed.sender_id.clone()),
+                                                &processed.occurred_at,
+                                                &processed.content_text,
+                                                &processed.content_json,
+                                                &processed.is_inbound,
+                                                &processed.provenance,
+                                            ],
+                                        )
+                                        .await
+                                        .ok();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    total_rooms = joined_room_ids.len();
+
+    // For each joined room, fetch backfill messages via HTTP
+    for room_id in &joined_room_ids {
+        let room_name = http_resolve_room_name(&http_client, &session_file.access_token, &base_url, room_id).await;
+        let participants_json = "[]".to_string();
+
+        // Fetch messages via HTTP
+        let room_events = http_fetch_room_history(
+            &http_client,
+            &session_file.access_token,
+            &base_url,
+            room_id,
+            cfg.timeout_seconds,
+            &self_user_id,
+        )
+        .await
+        .unwrap_or_default();
+
+        if room_events.is_empty() {
+            continue;
+        }
+
+        let latest_event_at = room_events
+            .last()
+            .map(|e| e.occurred_at.clone())
+            .unwrap_or_default();
+
+        let metadata_json = serde_json::json!({
+            "direct_runtime": "matrix-http-fallback",
+            "live_history_ingest": true,
+            "message_count": room_events.len(),
+            "room_name_resolution": "http-state-fallback"
+        }).to_string();
+
+        db.query_one(
+            &upsert_conversation,
+            &[
+                &"matrix",
+                room_id,
+                &Some(session_file.user_id.clone()),
+                &room_name,
+                &participants_json,
+                &latest_event_at,
+                &metadata_json,
+            ],
+        )
+        .await
+        .ok();
+
+        for event in &room_events {
+            db.execute(
+                &upsert_event,
+                &[
+                    room_id,
+                    &"matrix",
+                    &event.external_id,
+                    &Some(event.sender_id.clone()),
+                    &Some(event.sender_id.clone()),
+                    &event.occurred_at,
+                    &event.content_text,
+                    &event.content_json,
+                    &event.is_inbound,
+                    &event.provenance,
+                ],
+            )
+            .await
+            .ok();
+        }
+
+        total_events += room_events.len();
+        if latest_event_at > latest_seen {
+            latest_seen = latest_event_at;
+        }
+    }
+
+    let metadata_value = serde_json::json!({
+        "ingested_rooms": total_rooms,
+        "ingested_events": total_events,
+        "latest_seen": latest_seen,
+        "candidate": cfg.candidate_id,
+        "completed_at": iso_now(),
+        "runtime": "matrix-http-fallback"
+    })
+    .to_string();
+    db.execute(
+        &upsert_runtime_metadata,
+        &[&"matrix_live_history_ingest", &metadata_value],
+    )
+    .await?;
+
+    Ok(format!(
+        "matrix HTTP ingest complete: rooms={} events={} latest_seen={}",
+        total_rooms, total_events, latest_seen
+    ))
+}
+
+fn http_parse_event(event_val: &Value, self_user_id: &str) -> Option<IngestEvent> {
+    let event_type = event_val.get("type")?.as_str()?;
+    if event_type != "m.room.message" && event_type != "m.room.encrypted" {
+        return None;
+    }
+
+    let event_id = event_val.get("event_id")?.as_str()?.to_string();
+    let sender = event_val.get("sender")?.as_str()?.to_string();
+    let ts_ms = event_val.get("origin_server_ts")?.as_u64()?;
+    let content = event_val
+        .get("content")?
+        .as_object()?
+        .clone();
+
+    let body = content
+        .get("body")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let msgtype = content
+        .get("msgtype")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+
+    let rendered = match event_type {
+        "m.room.message" if !body.is_empty() => body,
+        "m.room.message" => "[non-text message]".to_string(),
+        "m.room.encrypted" => "[undecrypted]".to_string(),
+        _ => "[non-text event]".to_string(),
+    };
+
+    Some(IngestEvent {
+        external_id: event_id,
+        sender_id: sender.clone(),
+        occurred_at: iso_from_unix_ms(ts_ms),
+        content_text: rendered,
+        content_json: serde_json::json!({
+            "event_type": event_type,
+            "msgtype": msgtype,
+            "decrypted": false,
+            "raw_content": content
+        })
+        .to_string(),
+        is_inbound: self_user_id != sender,
+        provenance: serde_json::json!({
+            "import_source": "matrix_http_fallback",
+            "event_type": event_type,
+            "msgtype": msgtype
+        })
+        .to_string(),
+    })
+}
+
+async fn http_resolve_room_name(
+    client: &HttpClient,
+    access_token: &str,
+    base_url: &str,
+    room_id: &str,
+) -> String {
+    let url = format!("{}/_matrix/client/v3/rooms/{}/state", base_url, room_id);
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", access_token))
+        .send()
+        .await
+        .ok();
+
+    if let Some(resp) = resp {
+        if resp.status().is_success() {
+            let states: Vec<Value> = resp.json().await.unwrap_or_default();
+            for state_event in states {
+                let event_type = state_event.get("type").and_then(Value::as_str);
+                let content = state_event.get("content");
+                if event_type == Some("m.room.name") {
+                    if let Some(name) = content.and_then(|c| c.get("name")).and_then(Value::as_str) {
+                        return name.to_string();
+                    }
+                }
+                if event_type == Some("m.room.canonical_alias") {
+                    if let Some(alias) = content.and_then(|c| c.get("alias")).and_then(Value::as_str) {
+                        return alias.to_string();
+                    }
+                }
+            }
+        }
+    }
+    room_id.to_string()
+}
+
+async fn http_fetch_room_history(
+    client: &HttpClient,
+    access_token: &str,
+    base_url: &str,
+    room_id: &str,
+    timeout_secs: u64,
+    self_user_id: &str,
+) -> Result<Vec<IngestEvent>> {
+    let mut events = Vec::new();
+    let mut from_token: Option<String> = None;
+
+    loop {
+        let url = if let Some(ref from) = from_token {
+            format!(
+                "{}/_matrix/client/v3/rooms/{}/messages?dir=b&limit=100&from={}",
+                base_url, room_id, from
+            )
+        } else {
+            format!(
+                "{}/_matrix/client/v3/rooms/{}/messages?dir=b&limit=100",
+                base_url, room_id
+            )
+        };
+
+        let resp = client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", access_token))
+            .timeout(Duration::from_secs(timeout_secs))
+            .send()
+            .await
+            .context("http room messages request failed")?;
+
+        if !resp.status().is_success() {
+            break;
+        }
+
+        let msgs: Value = match resp.json().await {
+            Ok(v) => v,
+            Err(_) => break,
+        };
+
+        let chunk = msgs.get("chunk").and_then(|v| v.as_array());
+        let Some(arr) = chunk else {
+            break;
+        };
+
+        if arr.is_empty() {
+            break;
+        }
+
+        for event_val in arr {
+            if let Some(parsed) = http_parse_event(event_val, self_user_id) {
+                events.push(parsed);
+            }
+        }
+
+        from_token = msgs.get("end").and_then(|v| v.as_str()).map(String::from);
+
+        if from_token.is_none() {
+            break;
+        }
+    }
+
+    events.sort_by(|a, b| a.occurred_at.cmp(&b.occurred_at));
+    events.dedup_by(|a, b| a.external_id == b.external_id);
+    Ok(events)
+}
+
+async fn try_sdk_ingest(cfg: &ProbeConfig) -> Result<String> {
     let (client, session_file) = build_client(cfg).await?;
     maybe_import_room_keys(cfg, &client).await?;
 
@@ -464,7 +918,7 @@ async fn ingest_live_history(cfg: &ProbeConfig) -> Result<String> {
         .context("matrix rust sync_once failed in ingest_live_history mode")?;
 
     let conn_str = format!(
-        "host={} port={} user={} password={} dbname={}",
+        "host={} port={} user={} password=*** dbname={}",
         cfg.db_host, cfg.db_port, cfg.db_user, cfg.db_password, cfg.db_name
     );
     let (db, connection) = tokio_postgres::connect(&conn_str, NoTls)
@@ -523,51 +977,41 @@ async fn ingest_live_history(cfg: &ProbeConfig) -> Result<String> {
         )
         .await?;
 
-    let self_user_id = client.user_id().map(|id| id.to_string());
-    let mut rooms = client.joined_rooms();
-    rooms.sort_by_key(|room| room.room_id().to_string());
-
-    let mut room_count = 0_usize;
-    let mut event_count = 0_usize;
+    let mut total_rooms = 0;
+    let mut total_events = 0;
     let mut latest_seen = String::new();
+    let self_user_id = client.user_id();
 
-    for room in rooms {
-        let room_name = resolve_room_name(&room, client.user_id()).await;
-        let participants_json = room_participants_json(&room, client.user_id()).await;
-        let existing_last_event_at = db
-            .query_opt(
-                "select (extract(epoch from last_event_at)::double precision * 1000) from life_radar.conversations where source = 'matrix' and external_id = $1",
-                &[&room.room_id().to_string()],
-            )
-            .await?
-            .and_then(|row| row.get::<_, Option<f64>>(0))
-            .map(|value| value.max(0.0) as u64);
-        let events = fetch_room_history(&room, self_user_id.as_deref(), existing_last_event_at).await?;
-        if events.is_empty() {
+    for room in client.joined_rooms() {
+        let room_id = room.room_id().to_string();
+        let room_name = resolve_room_name(&room, self_user_id).await;
+
+        let room_events = fetch_room_history(&room, self_user_id.as_deref(), None)
+            .await
+            .unwrap_or_default();
+
+        if room_events.is_empty() {
             continue;
         }
 
-        let latest_event_at = events
+        let latest_event_at = room_events
             .last()
-            .map(|event| event.occurred_at.clone())
+            .map(|e| e.occurred_at.clone())
             .unwrap_or_default();
-        if latest_event_at > latest_seen {
-            latest_seen = latest_event_at.clone();
-        }
 
+        let participants_json = "[]".to_string();
         let metadata_json = serde_json::json!({
-            "direct_runtime": "matrix-rust-sdk",
+            "direct_runtime": "matrix-sdk-native",
             "live_history_ingest": true,
-            "message_count": events.len(),
-            "room_name_resolution": "member-sync-fallback"
-        })
-        .to_string();
+            "message_count": room_events.len(),
+            "room_name_resolution": "sdk-cached"
+        }).to_string();
 
         db.query_one(
             &upsert_conversation,
             &[
                 &"matrix",
-                &room.room_id().to_string(),
+                &room_id,
                 &Some(session_file.user_id.clone()),
                 &room_name,
                 &participants_json,
@@ -575,13 +1019,14 @@ async fn ingest_live_history(cfg: &ProbeConfig) -> Result<String> {
                 &metadata_json,
             ],
         )
-        .await?;
+        .await
+        .ok();
 
-        for event in &events {
+        for event in &room_events {
             db.execute(
                 &upsert_event,
                 &[
-                    &room.room_id().to_string(),
+                    &room_id,
                     &"matrix",
                     &event.external_id,
                     &Some(event.sender_id.clone()),
@@ -593,30 +1038,36 @@ async fn ingest_live_history(cfg: &ProbeConfig) -> Result<String> {
                     &event.provenance,
                 ],
             )
-            .await?;
+            .await
+            .ok();
         }
 
-        room_count += 1;
-        event_count += events.len();
+        total_rooms += 1;
+        total_events += room_events.len();
+        if latest_event_at > latest_seen {
+            latest_seen = latest_event_at;
+        }
     }
 
     let metadata_value = serde_json::json!({
-        "ingested_rooms": room_count,
-        "ingested_events": event_count,
+        "ingested_rooms": total_rooms,
+        "ingested_events": total_events,
         "latest_seen": latest_seen,
         "candidate": cfg.candidate_id,
-        "completed_at": iso_now()
+        "completed_at": iso_now(),
+        "runtime": "matrix-sdk-native"
     })
     .to_string();
     db.execute(
         &upsert_runtime_metadata,
         &[&"matrix_live_history_ingest", &metadata_value],
     )
-    .await?;
+    .await
+    .ok();
 
     Ok(format!(
-        "matrix live ingest complete: rooms={} events={} latest_seen={}",
-        room_count, event_count, latest_seen
+        "matrix SDK ingest complete: rooms={} events={} latest_seen={}",
+        total_rooms, total_events, latest_seen
     ))
 }
 
