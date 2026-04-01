@@ -28,8 +28,9 @@ RUN <<EOF
     cargo build --release --bin life-radar-matrix-rust-probe --manifest-path /build/probe/Cargo.toml 2>&1
 EOF
 
-# Strip binary for smaller size
-RUN strip /build/target/release/life-radar-matrix-rust-probe || true
+# Verify binary exists, then strip
+RUN ls -la /build/target/release/life-radar-matrix-rust-probe || ls -la /build/target/release/
+RUN strip /build/target/release/life-radar-matrix-rust-probe 2>/dev/null || true
 
 
 # ---- Stage 2: Node.js runtime ----
