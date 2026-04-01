@@ -1,0 +1,33 @@
+# LifeRadar API Server — FastAPI + asyncpg
+FROM python:3.12-slim-bookworm AS builder
+
+WORKDIR /app
+
+# Install dependencies
+COPY api/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY api/ ./api/
+
+# Production runtime
+FROM python:3.12-slim-bookworm
+
+WORKDIR /app
+
+# Install only runtime deps
+COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+COPY --from=builder /app/api/ ./api/
+
+ENV PYTHONUNBUFFERED=1
+ENV LIFE_RADAR_DB_HOST=localhost
+ENV LIFE_RADAR_DB_PORT=5432
+ENV LIFE_RADAR_DB_NAME=liferadar
+ENV LIFE_RADAR_DB_USER=liferadar
+
+EXPOSE 8000
+
+# Run via uvicorn with bind to all interfaces
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
