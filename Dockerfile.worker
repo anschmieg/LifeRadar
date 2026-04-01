@@ -17,15 +17,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /build
-
 # Build only the binary (not tests/docs), parallel jobs
 COPY matrix-rust-probe/ ./probe/
-WORKDIR /build/probe
+
+# Build from /build so binary lands at /build/target/release/
+WORKDIR /build
 
 # Cache cargo registry between builds
 RUN <<EOF
-    cargo build --release --bin life-radar-matrix-rust-probe 2>&1
+    cargo build --release --bin life-radar-matrix-rust-probe --manifest-path /build/probe/Cargo.toml 2>&1
 EOF
 
 # Strip binary for smaller size
