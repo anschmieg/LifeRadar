@@ -17,6 +17,7 @@ from api.models import (
     Commitment,
     Reminder,
     PlannedAction,
+    TaskCreate,
     MemoryRecord,
     RuntimeProbe,
     MessagingCandidate,
@@ -290,6 +291,27 @@ async def get_tasks(
                 None, limit,
             )
         return [PlannedAction(**dict(r)) for r in rows]
+
+
+@app.post("/tasks", response_model=PlannedAction)
+async def create_task(task: TaskCreate):
+    """Create a new task (planned action)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """INSERT INTO life_radar.planned_actions
+               (source_entity_type, title, summary, status, scheduled_start, scheduled_end, effort_estimate_minutes)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)
+               RETURNING *""",
+            task.source_entity_type,
+            task.title,
+            task.summary,
+            task.status,
+            task.scheduled_start,
+            task.scheduled_end,
+            task.effort_estimate_minutes,
+        )
+        return PlannedAction(**dict(row))
 
 
 # --- /calendar/events ---

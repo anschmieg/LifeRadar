@@ -208,6 +208,17 @@ class PlannedAction(TimestampedModel):
         from_attributes = True
 
 
+class TaskCreate(BaseModel):
+    """Schema for creating a new task (planned action)."""
+    source_entity_type: str
+    title: str
+    summary: Optional[str] = None
+    status: str = "proposed"
+    scheduled_start: Optional[datetime] = None
+    scheduled_end: Optional[datetime] = None
+    effort_estimate_minutes: Optional[int] = None
+
+
 # --- Memory Records ---
 class MemoryRecord(TimestampedModel):
     id: UUID

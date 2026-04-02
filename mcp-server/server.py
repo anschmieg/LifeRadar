@@ -1,10 +1,13 @@
 """
 LifeRadar MCP Server — exposes LifeRadar API tools via MCP protocol.
-Uses SSE transport for HTTP deployment.
+Uses stdio transport for MCP clients. Background HTTP thread handles
+Traefik health checks so the container stays alive.
 """
 import os
 import json
 import httpx
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Any
 
 # MCP server implementation using mcp SDK
@@ -23,6 +26,38 @@ VERSION = "1.0.0"
 
 server = Server(APP_NAME)
 
+
+# ── Background HTTP health server for Traefik/Coolify health checks ───────────
+
+class HealthHandler(BaseHTTPRequestHandler):
+    """Minimal handler that responds 200 to all requests — keeps container alive."""
+
+    def log_message(self, *args):
+        pass  # silence default stderr logging
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps({"status": "ok", "service": APP_NAME, "version": VERSION}).encode())
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
+
+
+def run_health_server(port: int = 8090):
+    """Run a blocking HTTP server in a background thread."""
+    srv = HTTPServer(("0.0.0.0", port), HealthHandler)
+    srv.serve_forever()
+
+
+# Start background health server before the async main() loop
+health_thread = threading.Thread(target=run_health_server, args=(8090,), daemon=True)
+health_thread.start()
+
+
+# ── MCP tool definitions ──────────────────────────────────────────────────────
 
 async def call_api(path: str, params: dict | None = None) -> list[dict]:
     """Make a GET request to the LifeRadar API and return parsed JSON."""
@@ -191,7 +226,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     """Handle a tool call from an MCP client."""
     params = arguments.copy()
 
-    # Route to API endpoint
     match name:
         case "health":
             result = await call_api("health")
@@ -226,8 +260,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
 
+# ── Entrypoint ────────────────────────────────────────────────────────────────
+
 async def main():
-    """Run the MCP server over stdio transport."""
+    """Run the MCP server over stdio transport (HTTP health server runs in background)."""
     async with stdio_server() as (read_stream, write_stream):
         await server.run(
             read_stream,
