@@ -81,6 +81,28 @@ async def call_api(path: str, params: dict | None = None) -> list[dict]:
             return [{"error": str(e)}]
 
 
+async def call_api_post(path: str, body: dict | None = None) -> list[dict]:
+    """Make a POST request to the LifeRadar API and return parsed JSON."""
+    url = f"{LIFE_RADAR_API_URL.rstrip('/')}/{path.lstrip('/')}"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            response = await client.post(url, json=body or {})
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, list):
+                return data
+            elif isinstance(data, dict):
+                return [data]
+            else:
+                return [{"result": str(data)}]
+        except httpx.HTTPStatusError as e:
+            return [{"error": f"HTTP {e.response.status_code}: {e.response.text[:200]}"}]
+        except httpx.ConnectError:
+            return [{"error": f"Could not connect to LifeRadar API at {url}. Is the API running?"}]
+        except Exception as e:
+            return [{"error": str(e)}]
+
+
 @server.list_tools()
 async def list_tools() -> list[Tool]:
     """Declare the tools this MCP server exposes."""
@@ -168,14 +190,32 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="calendar_events",
-            description="Calendar events from external calendars (Google Calendar, etc.) synced into LifeRadar.",
+            description="Calendar events from external calendars (Google Calendar, etc.) synced into LifeRadar. Supports GET to list events and POST to create/update events.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "from_date": {"type": "string", "description": "Start date (ISO 8601)"},
-                    "to_date": {"type": "string", "description": "End date (ISO 8601)"},
+                    "from_date": {"type": "string", "description": "Start date (ISO 8601) - GET only"},
+                    "to_date": {"type": "string", "description": "End date (ISO 8601) - GET only"},
                     "limit": {"type": "integer", "description": "Max results (default 50)", "default": 50},
+                    "title": {"type": "string", "description": "Event title - POST only"},
+                    "summary": {"type": "string", "description": "Event description/summary - POST only"},
+                    "scheduled_start": {"type": "string", "description": "Start datetime (ISO 8601) - POST only"},
+                    "scheduled_end": {"type": "string", "description": "End datetime (ISO 8601) - POST only"},
+                    "calendar_external_id": {"type": "string", "description": "External calendar ID for upsert - POST only"},
+                    "calendar_provider": {"type": "string", "description": "Provider: google, outlook - POST only"},
                 },
+            },
+        ),
+        Tool(
+            name="send-message",
+            description="Send a message in a Matrix/Outlook conversation. Requires user approval. Returns a message_id.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "conversation_id": {"type": "string", "description": "UUID of the conversation"},
+                    "content_text": {"type": "string", "description": "Message text to send"},
+                },
+                "required": ["conversation_id", "content_text"],
             },
         ),
         Tool(
@@ -245,7 +285,12 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         case "tasks":
             result = await call_api("tasks", params)
         case "calendar_events":
-            result = await call_api("calendar/events", params)
+            if "title" in params or "calendar_external_id" in params:
+                result = await call_api_post("calendar/events", params)
+            else:
+                result = await call_api("calendar/events", params)
+        case "send-message":
+            result = await call_api_post("messages/send", params)
         case "memories":
             result = await call_api("memories", params)
         case "probe_status":
