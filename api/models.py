@@ -208,6 +208,24 @@ class PlannedAction(TimestampedModel):
         from_attributes = True
 
 
+class CalendarEvent(BaseModel):
+    """Clean public API model for calendar events (subset of PlannedAction)."""
+    id: UUID
+    title: str
+    summary: Optional[str] = None
+    status: str = "scheduled"
+    scheduled_start: Optional[datetime] = None
+    scheduled_end: Optional[datetime] = None
+    calendar_provider: Optional[str] = None
+    calendar_external_id: Optional[str] = None
+    effort_estimate_minutes: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
 class TaskCreate(BaseModel):
     """Schema for creating a new task (planned action)."""
     source_entity_type: str

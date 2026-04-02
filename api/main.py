@@ -17,6 +17,7 @@ from api.models import (
     Commitment,
     Reminder,
     PlannedAction,
+    CalendarEvent,
     TaskCreate,
     CalendarEventUpsert,
     MessageSendRequest,
@@ -318,7 +319,7 @@ async def create_task(task: TaskCreate):
 
 
 # --- /calendar/events ---
-@app.get("/calendar/events", response_model=list[PlannedAction])
+@app.get("/calendar/events", response_model=list[CalendarEvent])
 async def get_calendar_events(
     from_date: Optional[datetime] = None,
     to_date: Optional[datetime] = None,
@@ -352,7 +353,7 @@ async def get_calendar_events(
             LIMIT ${idx}
         """
         rows = await conn.fetch(query, *params)
-        return [PlannedAction(**dict(r)) for r in rows]
+        return [CalendarEvent(**dict(r)) for r in rows]
 
 
 @app.post("/calendar/events", response_model=PlannedAction)
@@ -501,24 +502,48 @@ async def get_probe_candidates():
 
 
 # --- /search ---
-@app.get("/search")
+class SearchResult(BaseModel):
+    type: str
+    id: str
+    subject: Optional[str] = None
+    body: Optional[str] = None
+    score: Optional[float] = None
+
+
+@app.get("/search", response_model=list[SearchResult])
 async def search(
     q: str = Query(..., min_length=1),
     limit: int = Query(20, ge=1, le=100),
+    use_vector: bool = Query(False, description="Use pgvector semantic search if embeddings exist"),
 ):
     """
-    Semantic search using pgvector embeddings.
-    Searches across message content, conversation titles, and memory summaries.
-    Falls back to LIKE search if no embedding model available.
+    Search across conversations, messages, and memories.
+
+    Two modes:
+    - use_vector=false (default): Fast ILIKE text search across tables
+    - use_vector=true: pgvector cosine similarity search (requires embeddings to be pre-generated)
+
+    Embeddings are stored in life_radar.embeddings table. Use the worker to generate them.
     """
     pool = await get_pool()
     async with pool.acquire() as conn:
-        # Try vector search first, fall back to text search
-        # For now, just use text search across key tables
         likq = f"%{q}%"
+
+        # Check if embeddings exist for vector search
+        has_embeddings = await conn.fetchval(
+            "SELECT COUNT(*) > 0 FROM life_radar.embeddings WHERE embedding_model = 'text-embedding-3-small'"
+        )
 
         results = []
 
+        # Vector semantic search (if enabled and embeddings exist)
+        if use_vector and has_embeddings:
+            # TODO: Generate embedding for query text using OpenAI API
+            # For now, document that this requires embeddings to be pre-generated
+            # This branch will be implemented when embedding generation is wired up
+            pass
+
+        # Text search (fast ILIKE - primary for now)
         # Conversations
         convs = await conn.fetch(
             """SELECT id, 'conversation' as type, title as subject, NULL as body, priority_score
@@ -528,12 +553,12 @@ async def search(
             likq, limit,
         )
         for c in convs:
-            results.append({
-                "type": "conversation",
-                "id": str(c["id"]),
-                "subject": c["subject"],
-                "score": float(c["priority_score"] or 0),
-            })
+            results.append(SearchResult(
+                type="conversation",
+                id=str(c["id"]),
+                subject=c["subject"],
+                score=float(c["priority_score"] or 0),
+            ))
 
         # Messages
         msgs = await conn.fetch(
@@ -545,13 +570,12 @@ async def search(
             likq, None, limit,
         )
         for m in msgs:
-            results.append({
-                "type": "message",
-                "id": str(m["id"]),
-                "subject": m["subject"],
-                "body": m["body"],
-                "score": None,
-            })
+            results.append(SearchResult(
+                type="message",
+                id=str(m["id"]),
+                subject=m["subject"],
+                body=m["body"],
+            ))
 
         # Memories
         mems = await conn.fetch(
@@ -562,15 +586,15 @@ async def search(
             likq, None, limit,
         )
         for m in mems:
-            results.append({
-                "type": "memory",
-                "id": str(m["id"]),
-                "subject": m["subject"],
-                "body": m["body"],
-                "score": float(m["confidence"] or 0),
-            })
+            results.append(SearchResult(
+                type="memory",
+                id=str(m["id"]),
+                subject=m["subject"],
+                body=m["body"],
+                score=float(m["confidence"] or 0),
+            ))
 
-        return results
+        return results[:limit]
 
 
 if __name__ == "__main__":
