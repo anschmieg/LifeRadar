@@ -1,19 +1,25 @@
 """
 LifeRadar MCP Server — exposes LifeRadar API tools via MCP protocol.
-Uses stdio transport for MCP clients. Background HTTP thread handles
-Traefik health checks so the container stays alive.
+Uses SSE (Server-Sent Events) transport for streaming HTTP connections.
 """
 import os
 import json
 import httpx
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Any
 
 # MCP server implementation using mcp SDK
 from mcp.server import Server
-from mcp.server.stdio import stdio_server
+from mcp.server.sse import SseServerTransport
 from mcp.types import Tool, TextContent
+
+# ASGI framework
+from starlette.applications import Starlette
+from starlette.routing import Route, Mount
+from starlette.responses import JSONResponse, Response
+from starlette.middleware import Middleware
+from starlette.middleware.sessions import SessionMiddleware
+import hypercorn.config
+from hypercorn.asyncio import serve
 
 # LifeRadar API base URL — use host.docker.internal to reach API container
 LIFE_RADAR_API_URL = os.environ.get(
@@ -25,36 +31,6 @@ APP_NAME = "liferadar-mcp"
 VERSION = "1.0.0"
 
 server = Server(APP_NAME)
-
-
-# ── Background HTTP health server for Traefik/Coolify health checks ───────────
-
-class HealthHandler(BaseHTTPRequestHandler):
-    """Minimal handler that responds 200 to all requests — keeps container alive."""
-
-    def log_message(self, *args):
-        pass  # silence default stderr logging
-
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps({"status": "ok", "service": APP_NAME, "version": VERSION}).encode())
-
-    def do_HEAD(self):
-        self.send_response(200)
-        self.end_headers()
-
-
-def run_health_server(port: int = 8090):
-    """Run a blocking HTTP server in a background thread."""
-    srv = HTTPServer(("0.0.0.0", port), HealthHandler)
-    srv.serve_forever()
-
-
-# Start background health server before the async main() loop
-health_thread = threading.Thread(target=run_health_server, args=(8090,), daemon=True)
-health_thread.start()
 
 
 # ── MCP tool definitions ──────────────────────────────────────────────────────
@@ -305,18 +281,57 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
 
-# ── Entrypoint ────────────────────────────────────────────────────────────────
+# ── SSE Transport Setup ───────────────────────────────────────────────────────
 
-async def main():
-    """Run the MCP server over stdio transport (HTTP health server runs in background)."""
-    async with stdio_server() as (read_stream, write_stream):
+# Create SSE transport with message endpoint
+sse_transport = SseServerTransport("/messages/")
+
+
+async def handle_sse(request):
+    """Handle SSE connection request."""
+    async with sse_transport.connect_sse(
+        request.scope, request.receive, request._send
+    ) as streams:
         await server.run(
-            read_stream,
-            write_stream,
-            server.create_initialization_options(),
+            streams[0], streams[1], server.create_initialization_options()
         )
+    return Response()
 
+
+async def handle_messages(request):
+    """Handle incoming JSON-RPC messages via POST."""
+    await sse_transport.handle_post_message(request.scope, request.receive, request._send)
+    return Response(status_code=202)
+
+
+async def health(request):
+    """Health check endpoint."""
+    return JSONResponse({"status": "ok", "service": APP_NAME, "version": VERSION})
+
+
+# Create Starlette app with routes
+app = Starlette(
+    routes=[
+        Route("/sse", endpoint=handle_sse),
+        Route("/messages/", endpoint=handle_messages, methods=["POST"]),
+        Route("/health", endpoint=health),
+    ],
+)
+
+
+# ── Entrypoint ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import asyncio
-    asyncio.run(main())
+    
+    # Configure Hypercorn
+    config = hypercorn.config.Config()
+    config.bind = ["0.0.0.0:8090"]
+    config.logging.access_log = "-"
+    
+    print(f"[liferadar] Starting MCP SSE server on :8090")
+    print(f"[liferadar] SSE endpoint: /sse")
+    print(f"[liferadar] Messages endpoint: /messages/")
+    print(f"[liferadar] Health endpoint: /health")
+    
+    asyncio.run(serve(app, config))
