@@ -219,6 +219,28 @@ class TaskCreate(BaseModel):
     effort_estimate_minutes: Optional[int] = None
 
 
+class CalendarEventUpsert(BaseModel):
+    """Schema for upserting a calendar event (planned action with calendar_external_id)."""
+    title: str
+    summary: Optional[str] = None
+    scheduled_start: Optional[datetime] = None
+    scheduled_end: Optional[datetime] = None
+    calendar_external_id: Optional[str] = None
+    calendar_provider: Optional[str] = None
+
+
+class MessageSendRequest(BaseModel):
+    """Schema for sending a message via Matrix/Outlook."""
+    conversation_id: UUID
+    content_text: str
+
+
+class MessageSendResponse(BaseModel):
+    """Response for message send endpoint."""
+    status: str
+    message_id: str
+
+
 # --- Memory Records ---
 class MemoryRecord(TimestampedModel):
     id: UUID

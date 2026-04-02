@@ -18,6 +18,9 @@ from api.models import (
     Reminder,
     PlannedAction,
     TaskCreate,
+    CalendarEventUpsert,
+    MessageSendRequest,
+    MessageSendResponse,
     MemoryRecord,
     RuntimeProbe,
     MessagingCandidate,
@@ -350,6 +353,87 @@ async def get_calendar_events(
         """
         rows = await conn.fetch(query, *params)
         return [PlannedAction(**dict(r)) for r in rows]
+
+
+@app.post("/calendar/events", response_model=PlannedAction)
+async def upsert_calendar_event(event: CalendarEventUpsert):
+    """
+    Upsert a calendar event into planned_actions.
+    If calendar_external_id is provided, updates existing event with that external_id.
+    If not provided, inserts a new event.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if event.calendar_external_id:
+            # Upsert: INSERT ... ON CONFLICT DO UPDATE
+            row = await conn.fetchrow(
+                """INSERT INTO life_radar.planned_actions
+                   (title, summary, scheduled_start, scheduled_end, calendar_external_id,
+                    calendar_provider, source_entity_type, status)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                   ON CONFLICT (calendar_external_id) DO UPDATE SET
+                     title = EXCLUDED.title,
+                     summary = EXCLUDED.summary,
+                     scheduled_start = EXCLUDED.scheduled_start,
+                     scheduled_end = EXCLUDED.scheduled_end,
+                     calendar_provider = EXCLUDED.calendar_provider
+                   RETURNING *""",
+                event.title,
+                event.summary,
+                event.scheduled_start,
+                event.scheduled_end,
+                event.calendar_external_id,
+                event.calendar_provider,
+                "calendar",
+                "scheduled",
+            )
+        else:
+            # Plain INSERT for new events without external_id
+            row = await conn.fetchrow(
+                """INSERT INTO life_radar.planned_actions
+                   (title, summary, scheduled_start, scheduled_end, calendar_provider,
+                    source_entity_type, status)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7)
+                   RETURNING *""",
+                event.title,
+                event.summary,
+                event.scheduled_start,
+                event.scheduled_end,
+                event.calendar_provider,
+                "calendar",
+                "scheduled",
+            )
+        return PlannedAction(**dict(row))
+
+
+@app.post("/messages/send", response_model=MessageSendResponse)
+async def send_message(request: MessageSendRequest):
+    """
+    Send a message via Matrix/Outlook (user-approved only).
+    
+    This is a stub implementation that logs the send intent and returns a queued status.
+    Full Matrix sending requires the Rust E2EE binary with access token, which the worker provides.
+    To send via Matrix, the conversation must have a Matrix room_id stored in external_id.
+    """
+    import sys
+    import uuid
+
+    message_id = str(uuid.uuid4())
+
+    # Log the send intent
+    print(
+        f"[messages/send] queued: conversation_id={request.conversation_id} "
+        f"message_id={message_id} content_text={request.content_text[:50]!r}...",
+        file=sys.stderr,
+    )
+
+    # TODO: Full implementation requires:
+    # 1. Look up conversation to get Matrix room_id from external_id
+    # 2. Use Matrix REST API with access token to send the message
+    # 3. The Rust E2EE binary at /usr/local/bin/life-radar-matrix-rust-probe handles E2EE
+    # For now, we log and return queued status
+
+    return MessageSendResponse(status="queued", message_id=message_id)
 
 
 # --- /memories ---
