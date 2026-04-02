@@ -140,7 +140,7 @@ async def get_conversations(
 ):
     pool = await get_pool()
     async with pool.acquire() as conn:
-        conditions = ["state != 'archived' OR $1::text IS NOT NULL"]
+        conditions = ["state = $1 OR ($1 IS NULL AND state != 'archived')"]
         params = [state]
         idx = 2
 
@@ -261,7 +261,7 @@ async def get_reminders(
                 """SELECT * FROM life_radar.reminders
                    ORDER BY remind_at ASC
                    LIMIT $1""",
-                limit,
+                None, limit,
             )
         return [Reminder(**dict(r)) for r in rows]
 
@@ -287,7 +287,7 @@ async def get_tasks(
                 """SELECT * FROM life_radar.planned_actions
                    ORDER BY scheduled_start ASC NULLS LAST
                    LIMIT $1""",
-                limit,
+                None, limit,
             )
         return [PlannedAction(**dict(r)) for r in rows]
 
@@ -319,13 +319,13 @@ async def get_calendar_events(
             idx += 1
 
         where = " AND ".join(conditions)
+        params.append(limit)
         query = f"""
             SELECT * FROM life_radar.planned_actions
             WHERE {where}
             ORDER BY scheduled_start ASC
             LIMIT ${idx}
         """
-        params.append(limit)
         rows = await conn.fetch(query, *params)
         return [PlannedAction(**dict(r)) for r in rows]
 
@@ -435,8 +435,8 @@ async def search(
                FROM life_radar.message_events
                WHERE content_text ILIKE $1
                ORDER BY occurred_at DESC
-               LIMIT $2""",
-            likq, limit,
+               LIMIT $3""",
+            likq, None, limit,
         )
         for m in msgs:
             results.append({
@@ -452,8 +452,8 @@ async def search(
             """SELECT id, 'memory' as type, title as subject, summary as body, confidence
                FROM life_radar.memory_records
                WHERE title ILIKE $1 OR summary ILIKE $1 OR detail ILIKE $1
-               LIMIT $2""",
-            likq, limit,
+               LIMIT $3""",
+            likq, None, limit,
         )
         for m in mems:
             results.append({
