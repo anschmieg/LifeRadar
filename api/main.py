@@ -9,6 +9,7 @@ from uuid import UUID
 
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from api.db import get_pool, close_pool
 from api.models import (
