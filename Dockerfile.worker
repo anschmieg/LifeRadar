@@ -65,8 +65,15 @@ COPY schema/schema.sql /opt/life-radar/schema.sql
 COPY api/ /opt/life-radar/api/
 COPY api/requirements.txt /opt/life-radar/requirements.txt
 
+# Copy MCP server (for SSE transport)
+COPY mcp-server/ /opt/life-radar/mcp-server/
+COPY mcp-server/requirements.txt /opt/life-radar/mcp-server/requirements.txt
+
 # Install Python dependencies for FastAPI
 RUN pip3 install --break-system-packages -r /opt/life-radar/requirements.txt
+
+# Install Python dependencies for MCP server
+RUN pip3 install --break-system-packages -r /opt/life-radar/mcp-server/requirements.txt
 
 RUN chmod +x /usr/local/bin/life-radar-matrix-rust-probe \
  && chmod +x /opt/life-radar/bin/*.sh \
