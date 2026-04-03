@@ -327,7 +327,6 @@ if __name__ == "__main__":
     # Configure Hypercorn
     config = hypercorn.config.Config()
     config.bind = ["0.0.0.0:8090"]
-    config.logging.access_log = "-"
     
     print(f"[liferadar] Starting MCP SSE server on :8090")
     print(f"[liferadar] SSE endpoint: /sse")
