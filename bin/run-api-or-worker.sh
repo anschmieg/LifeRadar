@@ -20,6 +20,7 @@ elif [[ "$MODE" == "mcp" ]]; then
     export PYTHONPATH="/opt/life-radar:${PYTHONPATH:-}"
     cd /opt/life-radar
     echo "[life-radar] Installing MCP dependencies..."
+    pip3 install --break-system-packages --force-reinstall itsdangerous
     pip3 install --break-system-packages -r mcp-server/requirements.txt
     echo "[life-radar] Starting MCP SSE server on :8090..."
     exec python3 mcp-server/server.py
