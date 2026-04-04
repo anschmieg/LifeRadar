@@ -7,6 +7,9 @@ WORKDIR /app
 COPY api/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Install curl for healthcheck (Coolify uses it)
+RUN pip install --no-cache-dir curl
+
 # Copy application code
 COPY api/ ./api/
 

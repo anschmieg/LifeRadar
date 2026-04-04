@@ -6,6 +6,9 @@ WORKDIR /app
 COPY mcp-server/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Install curl for healthcheck (if ever enabled)
+RUN pip install --no-cache-dir curl
+
 COPY mcp-server/ ./mcp-server/
 
 # Production runtime
