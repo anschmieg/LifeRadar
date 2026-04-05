@@ -69,23 +69,27 @@ async def proxy_to_mcp(request: Request, path: str = ""):
     target_url = f"{MCP_URL}/{path}" if path else f"{MCP_URL}/"
     headers = dict(request.headers)
     headers.pop("host", None)
+    print(f"[MCP PROXY] {request.method} {target_url}")  # Debug log
     try:
         body = await request.body()
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.request(
                 method=request.method,
                 url=target_url,
                 headers=headers,
                 content=body,
             )
+        print(f"[MCP PROXY] Response: {response.status_code} - {response.text[:100]}")  # Debug
         return Response(
             content=response.content,
             status_code=response.status_code,
             headers=dict(response.headers),
         )
-    except httpx.ConnectError:
-        return JSONResponse(status_code=503, content={"error": "MCP server unavailable"})
+    except httpx.ConnectError as e:
+        print(f"[MCP PROXY] ConnectError: {e}")
+        return JSONResponse(status_code=503, content={"error": "MCP server unavailable", "detail": str(e)})
     except Exception as e:
+        print(f"[MCP PROXY] Error: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
