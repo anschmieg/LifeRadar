@@ -1,22 +1,5 @@
 services:
-  life-radar-db:
-    image: pgvector/pgvector:pg17
-    container_name: life-radar-db
-    environment:
-      POSTGRES_DB: ${LIFE_RADAR_DB_NAME:-life_radar}
-      POSTGRES_USER: ${LIFE_RADAR_DB_USER:-life_radar}
-      POSTGRES_PASSWORD: ${LIFE_RADAR_DB_PASSWORD:?LifeRadar DB password required}
-    volumes:
-      - life-radar-postgres:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${LIFE_RADAR_DB_USER:-life_radar} -d ${LIFE_RADAR_DB_NAME:-life_radar}"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-    restart: unless-stopped
-    networks:
-      - life-radar-net
-
+  # DB is external (liferadar-db Coolify service) - override LIFE_RADAR_DB_HOST if needed
   life-radar-api:
     build:
       context: .
