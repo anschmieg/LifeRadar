@@ -2,13 +2,16 @@
 LifeRadar API Server — FastAPI
 """
 import os
+import httpx
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response, JSONResponse
+from starlette.requests import Request as StarletteRequest
 from pydantic import BaseModel
 
 from api.db import get_pool, close_pool
@@ -54,6 +57,36 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+MCP_URL = os.environ.get("LIFE_RADAR_MCP_URL", "http://liferadar-mcp:8090")
+
+
+# --- MCP proxy (Streamable HTTP) ---
+@app.api_route("/mcp/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+@app.api_route("/mcp", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_to_mcp(request: Request, path: str = ""):
+    """Proxy MCP requests to the MCP server container."""
+    target_url = f"{MCP_URL}/{path}" if path else f"{MCP_URL}/"
+    headers = dict(request.headers)
+    headers.pop("host", None)
+    try:
+        body = await request.body()
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.request(
+                method=request.method,
+                url=target_url,
+                headers=headers,
+                content=body,
+            )
+        return Response(
+            content=response.content,
+            status_code=response.status_code,
+            headers=dict(response.headers),
+        )
+    except httpx.ConnectError:
+        return JSONResponse(status_code=503, content={"error": "MCP server unavailable"})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 # --- /health ---

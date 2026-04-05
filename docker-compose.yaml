@@ -11,6 +11,7 @@ services:
       LIFE_RADAR_DB_NAME: ${LIFE_RADAR_DB_NAME:-liferadar}
       LIFE_RADAR_DB_USER: ${LIFE_RADAR_DB_USER:-liferadar}
       LIFE_RADAR_DB_PASSWORD: ${LIFE_RADAR_DB_PASSWORD}
+      LIFE_RADAR_MCP_URL: http://liferadar-mcp:8090
     expose:
       - "8000"
     labels:
@@ -45,8 +46,6 @@ services:
       - "traefik.http.routers.liferadar-mcp.tls=true"
       - "traefik.http.routers.liferadar-mcp.priority=100"
       - "traefik.docker.network=coolify"
-      - "traefik.http.middlewares.liferadar-mcp-strip.stripprefix.prefixes=/mcp"
-      - "traefik.http.routers.liferadar-mcp.middlewares=liferadar-mcp-strip"
       - "traefik.http.services.liferadar-mcp.loadbalancer.server.port=8090"
     networks:
       - ssskgkswgoc8ckcs0000sooc
