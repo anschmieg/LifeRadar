@@ -11,7 +11,7 @@ services:
       LIFE_RADAR_DB_NAME: ${LIFE_RADAR_DB_NAME:-liferadar}
       LIFE_RADAR_DB_USER: ${LIFE_RADAR_DB_USER:-liferadar}
       LIFE_RADAR_DB_PASSWORD: ${LIFE_RADAR_DB_PASSWORD}
-      LIFE_RADAR_MCP_URL: http://liferadar-mcp:8090
+      LIFE_RADAR_MCP_URL: http://life-radar-mcp-ssskgkswgoc8ckcs0000sooc:8090
     expose:
       - "8000"
     labels:
