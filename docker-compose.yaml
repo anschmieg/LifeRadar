@@ -45,10 +45,16 @@ services:
       - "traefik.http.middlewares.liferadar-mcp-strip.stripprefix.prefixes=/mcp"
       - "traefik.http.routers.liferadar-mcp.middlewares=liferadar-mcp-strip"
       - "traefik.http.services.liferadar-mcp.loadbalancer.server.port=8090"
-      - "traefik.http.routers.liferadar-mcp-sse.rule=Host(`liferadar.nothing.pink`) && PathPrefix(/sse)"
+      - "traefik.http.routers.liferadar-mcp-sse.rule=Host(`liferadar.nothing.pink`) && Path(/sse)"
       - "traefik.http.routers.liferadar-mcp-sse.entrypoints=https"
       - "traefik.http.routers.liferadar-mcp-sse.tls=true"
+      - "traefik.http.routers.liferadar-mcp-sse.priority=100"
       - "traefik.http.services.liferadar-mcp-sse.loadbalancer.server.port=8090"
+      - "traefik.http.routers.liferadar-mcp-messages.rule=Host(`liferadar.nothing.pink`) && Path(/messages/)"
+      - "traefik.http.routers.liferadar-mcp-messages.entrypoints=https"
+      - "traefik.http.routers.liferadar-mcp-messages.tls=true"
+      - "traefik.http.routers.liferadar-mcp-messages.priority=100"
+      - "traefik.http.services.liferadar-mcp-messages.loadbalancer.server.port=8090"
     networks:
       - life-radar-net
     restart: unless-stopped
