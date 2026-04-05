@@ -1,6 +1,6 @@
 """
 LifeRadar MCP Server — exposes LifeRadar API tools via MCP protocol.
-Uses SSE (Server-Sent Events) transport for streaming HTTP connections.
+Uses Streamable HTTP transport for JSON-RPC requests.
 """
 import os
 import json
@@ -9,17 +9,16 @@ from typing import Any
 
 # MCP server implementation using mcp SDK
 from mcp.server import Server
-from mcp.server.sse import SseServerTransport
 from mcp.types import Tool, TextContent
 
 # ASGI framework
 from starlette.applications import Starlette
-from starlette.routing import Route, Mount
-from starlette.responses import JSONResponse, Response
-from starlette.middleware import Middleware
-from starlette.middleware.sessions import SessionMiddleware
+from starlette.routing import Route
+from starlette.responses import JSONResponse, StreamingResponse
+from starlette.requests import Request
 import hypercorn.config
 from hypercorn.asyncio import serve
+import asyncio
 
 # LifeRadar API base URL — use host.docker.internal to reach API container
 LIFE_RADAR_API_URL = os.environ.get(
@@ -281,30 +280,135 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
 
-# ── SSE Transport Setup ───────────────────────────────────────────────────────
+# ── Streamable HTTP Transport ─────────────────────────────────────────────────
 
-# Create SSE transport with message endpoint
-sse_transport = SseServerTransport("/messages/")
+async def handle_mcp(request: Request):
+    """Handle MCP JSON-RPC requests via streamable HTTP.
+    
+    Supports both single-shot requests and streaming responses.
+    """
+    try:
+        body = await request.body()
+        
+        if not body:
+            return JSONResponse(
+                {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}},
+                status_code=400
+            )
+        
+        # Parse JSON-RPC request
+        try:
+            rpc_request = json.loads(body)
+        except json.JSONDecodeError:
+            return JSONResponse(
+                {"jsonrpc": "2.0", "error": {"code": -32700, "message": "Parse error"}},
+                status_code=400
+            )
+        
+        # Handle batch requests
+        if isinstance(rpc_request, list):
+            responses = []
+            for req in rpc_request:
+                resp = await process_jsonrpc_request(req)
+                if resp:
+                    responses.append(resp)
+            if responses:
+                return JSONResponse(responses)
+            return JSONResponse([], status_code=200)
+        
+        # Single request
+        resp = await process_jsonrpc_request(rpc_request)
+        if resp:
+            return JSONResponse(resp)
+        return JSONResponse({"jsonrpc": "2.0", "id": rpc_request.get("id")}, status_code=200)
+        
+    except Exception as e:
+        return JSONResponse(
+            {"jsonrpc": "2.0", "error": {"code": -32603, "message": f"Internal error: {str(e)}"}},
+            status_code=500
 
 
-async def handle_sse(request):
-    """Handle SSE connection request."""
-    async with sse_transport.connect_sse(
-        request.scope, request.receive, request._send
-    ) as streams:
-        await server.run(
-            streams[0], streams[1], server.create_initialization_options()
-        )
-    return Response()
+async def process_jsonrpc_request(rpc_request: dict) -> dict | None:
+    """Process a single JSON-RPC request and return response."""
+    jsonrpc = rpc_request.get("jsonrpc")
+    method = rpc_request.get("method")
+    request_id = rpc_request.get("id")
+    params = rpc_request.get("params", {})
+    
+    if jsonrpc != "2.0" or not method:
+        return {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": request_id}
+    
+    # Handle MCP methods
+    match method:
+        case "initialize":
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {
+                        "tools": {},
+                        "resources": {},
+                        "prompts": {}
+                    },
+                    "serverInfo": {
+                        "name": APP_NAME,
+                        "version": VERSION
+                    }
+                }
+            }
+        
+        case "tools/list":
+            tools = await list_tools()
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {"tools": [tool_to_dict(t) for t in tools]}
+            }
+        
+        case "tools/call":
+            tool_name = params.get("name")
+            tool_args = params.get("arguments", {})
+            if not tool_name:
+                return {"jsonrpc": "2.0", "error": {"code": -32602, "message": "Missing tool name"}, "id": request_id}
+            
+            try:
+                result = await call_tool(tool_name, tool_args)
+                # Convert TextContent to JSON-serializable format
+                result_data = [{"type": r.type, "text": r.text} for r in result]
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {"content": result_data}
+                }
+            except Exception as e:
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {"code": -32603, "message": str(e)}
+                }
+        
+        case "ping":
+            return {"jsonrpc": "2.0", "id": request_id, "result": {}}
+        
+        case _:
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": -32601, "message": f"Method not found: {method}"}
+            }
 
 
-async def handle_messages(request):
-    """Handle incoming JSON-RPC messages via POST."""
-    await sse_transport.handle_post_message(request.scope, request.receive, request._send)
-    return Response(status_code=202)
+def tool_to_dict(tool: Tool) -> dict:
+    """Convert a Tool object to a dictionary."""
+    return {
+        "name": tool.name,
+        "description": tool.description,
+        "inputSchema": tool.inputSchema
+    }
 
 
-async def health(request):
+async def health(request: Request):
     """Health check endpoint."""
     return JSONResponse({"status": "ok", "service": APP_NAME, "version": VERSION})
 
@@ -312,8 +416,7 @@ async def health(request):
 # Create Starlette app with routes
 app = Starlette(
     routes=[
-        Route("/sse", endpoint=handle_sse),
-        Route("/messages/", endpoint=handle_messages, methods=["POST"]),
+        Route("/", endpoint=handle_mcp, methods=["POST"]),
         Route("/health", endpoint=health),
     ],
 )
@@ -328,9 +431,8 @@ if __name__ == "__main__":
     config = hypercorn.config.Config()
     config.bind = ["0.0.0.0:8090"]
     
-    print(f"[liferadar] Starting MCP SSE server on :8090")
-    print(f"[liferadar] SSE endpoint: /sse")
-    print(f"[liferadar] Messages endpoint: /messages/")
+    print(f"[liferadar] Starting MCP server on :8090")
+    print(f"[liferadar] MCP endpoint: POST /")
     print(f"[liferadar] Health endpoint: /health")
     
     asyncio.run(serve(app, config))

@@ -53,3 +53,17 @@ htmlcov/
 *.tmp
 *.bak
 *.cache
+# Environment
+.env
+
+# Matrix identity (extracted from Oracle, not committed)
+matrix-identity.tar.gz
+matrix-session.json
+beeper-e2e-keys.txt
+.e2ee-export-passphrase
+device-auth.json
+matrix-rust-sdk-store/
+
+# Backups
+*.bak
+*.backup
