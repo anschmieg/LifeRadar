@@ -417,6 +417,8 @@ async def health(request: Request):
 # Create Starlette app with routes
 app = Starlette(
     routes=[
+        Route("/mcp", endpoint=handle_mcp, methods=["POST"]),
+        Route("/mcp/health", endpoint=health),
         Route("/", endpoint=handle_mcp, methods=["POST"]),
         Route("/health", endpoint=health),
     ],
