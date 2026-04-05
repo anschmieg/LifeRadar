@@ -36,7 +36,7 @@ services:
       LIFE_RADAR_DB_NAME: ${LIFE_RADAR_DB_NAME:-liferadar}
       LIFE_RADAR_DB_USER: ${LIFE_RADAR_DB_USER:-liferadar}
       LIFE_RADAR_DB_PASSWORD: ${LIFE_RADAR_DB_PASSWORD}
-      LIFE_RADAR_API_URL: http://liferadar-api:8000
+      LIFE_RADAR_API_URL: http://life-radar-api:8000
     expose:
       - "8090"
     labels:
