@@ -1,29 +1,4 @@
 services:
-  life-radar-api:
-    build:
-      context: .
-      dockerfile: Dockerfile.api
-    container_name: life-radar-api
-    environment:
-      LIFE_RADAR_DB_HOST: host.docker.internal
-      LIFE_RADAR_DB_PORT: "5432"
-      LIFE_RADAR_DB_NAME: ${LIFE_RADAR_DB_NAME:-liferadar}
-      LIFE_RADAR_DB_USER: ${LIFE_RADAR_DB_USER:-liferadar}
-      LIFE_RADAR_DB_PASSWORD: ${LIFE_RADAR_DB_PASSWORD}
-      LIFE_RADAR_MCP_URL: http://life-radar-mcp:8090
-    expose:
-      - "8000"
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.liferadar-api.rule=Host(`liferadar.nothing.pink`)"
-      - "traefik.http.routers.liferadar-api.entrypoints=https"
-      - "traefik.http.routers.liferadar-api.tls=true"
-      - "traefik.http.services.liferadar-api.loadbalancer.server.port=8000"
-    networks:
-      - ssskgkswgoc8ckcs0000sooc
-      - coolify
-    restart: unless-stopped
-
   life-radar-mcp:
     build:
       context: .
@@ -35,7 +10,7 @@ services:
       LIFE_RADAR_DB_NAME: ${LIFE_RADAR_DB_NAME:-liferadar}
       LIFE_RADAR_DB_USER: ${LIFE_RADAR_DB_USER:-liferadar}
       LIFE_RADAR_DB_PASSWORD: ${LIFE_RADAR_DB_PASSWORD}
-      LIFE_RADAR_API_URL: http://life-radar-api:8000
+      LIFE_RADAR_API_URL: http://liferadar-api:8000
     expose:
       - "8090"
     labels:
@@ -43,16 +18,11 @@ services:
       - "traefik.http.routers.liferadar-mcp.rule=Host(`liferadar.nothing.pink`) && PathPrefix(/mcp)"
       - "traefik.http.routers.liferadar-mcp.entrypoints=https"
       - "traefik.http.routers.liferadar-mcp.tls=true"
-      - "traefik.http.routers.liferadar-mcp.priority=100"
-      - "traefik.docker.network=coolify"
       - "traefik.http.services.liferadar-mcp.loadbalancer.server.port=8090"
     networks:
-      - ssskgkswgoc8ckcs0000sooc
       - coolify
     restart: unless-stopped
 
 networks:
-  ssskgkswgoc8ckcs0000sooc:
-    external: true
   coolify:
     external: true
