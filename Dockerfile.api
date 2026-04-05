@@ -7,8 +7,7 @@ WORKDIR /app
 COPY api/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install curl for healthcheck (Coolify uses it)
-RUN pip install --no-cache-dir curl
+# Note: Coolify handles healthchecks via HTTP probe on port 8000, no curl needed
 
 # Copy application code
 COPY api/ ./api/
