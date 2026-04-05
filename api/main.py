@@ -37,7 +37,12 @@ from api.models import (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: create connection pool
+    db_host = os.environ.get("LIFE_RADAR_DB_HOST", "NOT SET")
+    db_port = os.environ.get("LIFE_RADAR_DB_PORT", "NOT SET")
+    db_name = os.environ.get("LIFE_RADAR_DB_NAME", "NOT SET")
+    print(f"[STARTUP] DB config: host={db_host}, port={db_port}, name={db_name}")
     await get_pool()
+    print("[STARTUP] Pool initialization attempted")
     yield
     # Shutdown: close pool
     await close_pool()
