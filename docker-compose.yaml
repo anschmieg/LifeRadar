@@ -29,8 +29,6 @@ services:
       context: .
       dockerfile: Dockerfile.mcp
     container_name: life-radar-mcp
-    depends_on:
-      - life-radar-api
     environment:
       LIFE_RADAR_DB_HOST: host.docker.internal
       LIFE_RADAR_DB_PORT: "5432"
