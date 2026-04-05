@@ -6,7 +6,7 @@ services:
       dockerfile: Dockerfile.api
     container_name: life-radar-api
     environment:
-      LIFE_RADAR_DB_HOST: ${LIFE_RADAR_DB_HOST:-g0gsgwskkc8k8cckc0kg8sc4}
+      LIFE_RADAR_DB_HOST: ${LIFE_RADAR_DB_HOST:-localhost}
       LIFE_RADAR_DB_PORT: "5432"
       LIFE_RADAR_DB_NAME: ${LIFE_RADAR_DB_NAME:-liferadar}
       LIFE_RADAR_DB_USER: ${LIFE_RADAR_DB_USER:-liferadar}
@@ -28,7 +28,7 @@ services:
       dockerfile: Dockerfile.mcp
     container_name: life-radar-mcp
     environment:
-      LIFE_RADAR_DB_HOST: ${LIFE_RADAR_DB_HOST:-g0gsgwskkc8k8cckc0kg8sc4}
+      LIFE_RADAR_DB_HOST: ${LIFE_RADAR_DB_HOST:-localhost}
       LIFE_RADAR_DB_PORT: "5432"
       LIFE_RADAR_DB_NAME: ${LIFE_RADAR_DB_NAME:-liferadar}
       LIFE_RADAR_DB_USER: ${LIFE_RADAR_DB_USER:-liferadar}
