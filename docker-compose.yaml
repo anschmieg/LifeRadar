@@ -18,6 +18,8 @@ services:
       - "traefik.http.routers.liferadar-mcp.rule=Host(`liferadar.nothing.pink`) && PathPrefix(/mcp)"
       - "traefik.http.routers.liferadar-mcp.entrypoints=https"
       - "traefik.http.routers.liferadar-mcp.tls=true"
+      - "traefik.http.routers.liferadar-mcp.priority=100"
+      - "traefik.docker.network=coolify"
       - "traefik.http.services.liferadar-mcp.loadbalancer.server.port=8090"
     networks:
       - coolify
