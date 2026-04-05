@@ -45,6 +45,8 @@ services:
       - "traefik.http.routers.liferadar-mcp.tls=true"
       - "traefik.http.routers.liferadar-mcp.priority=100"
       - "traefik.docker.network=coolify"
+      - "traefik.http.middlewares.liferadar-mcp-strip.stripprefix.prefixes=/mcp"
+      - "traefik.http.routers.liferadar-mcp.middlewares=liferadar-mcp-strip"
       - "traefik.http.services.liferadar-mcp.loadbalancer.server.port=8090"
     networks:
       - ssskgkswgoc8ckcs0000sooc
