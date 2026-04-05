@@ -19,8 +19,6 @@ services:
       - "traefik.http.routers.liferadar-api.entrypoints=https"
       - "traefik.http.routers.liferadar-api.tls=true"
       - "traefik.http.services.liferadar-api.loadbalancer.server.port=8000"
-    networks:
-      - life-radar-net
     restart: unless-stopped
 
   life-radar-mcp:
@@ -45,10 +43,4 @@ services:
       - "traefik.http.middlewares.liferadar-mcp-strip.stripprefix.prefixes=/mcp"
       - "traefik.http.routers.liferadar-mcp.middlewares=liferadar-mcp-strip"
       - "traefik.http.services.liferadar-mcp.loadbalancer.server.port=8090"
-    networks:
-      - life-radar-net
     restart: unless-stopped
-
-networks:
-  life-radar-net:
-    driver: bridge
