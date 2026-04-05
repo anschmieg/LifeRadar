@@ -1,30 +1,11 @@
 services:
-  # Local PostgreSQL with pgvector (replaces external liferadar-db)
-  database:
-    image: pgvector/pgvector:pg17
-    container_name: liferadar-db-local
-    environment:
-      POSTGRES_DB: ${LIFE_RADAR_DB_NAME:-liferadar}
-      POSTGRES_USER: ${LIFE_RADAR_DB_USER:-liferadar}
-      POSTGRES_PASSWORD: ${LIFE_RADAR_DB_PASSWORD}
-    expose:
-      - "5432"
-    volumes:
-      - liferadar-data:/var/lib/postgresql/data
-    networks:
-      - ssskgkswgoc8ckcs0000sooc
-      - coolify
-    restart: unless-stopped
-
   life-radar-api:
     build:
       context: .
       dockerfile: Dockerfile.api
     container_name: life-radar-api
-    depends_on:
-      - database
     environment:
-      LIFE_RADAR_DB_HOST: liferadar-db-local
+      LIFE_RADAR_DB_HOST: host.docker.internal
       LIFE_RADAR_DB_PORT: "5432"
       LIFE_RADAR_DB_NAME: ${LIFE_RADAR_DB_NAME:-liferadar}
       LIFE_RADAR_DB_USER: ${LIFE_RADAR_DB_USER:-liferadar}
@@ -49,10 +30,9 @@ services:
       dockerfile: Dockerfile.mcp
     container_name: life-radar-mcp
     depends_on:
-      - database
       - life-radar-api
     environment:
-      LIFE_RADAR_DB_HOST: liferadar-db-local
+      LIFE_RADAR_DB_HOST: host.docker.internal
       LIFE_RADAR_DB_PORT: "5432"
       LIFE_RADAR_DB_NAME: ${LIFE_RADAR_DB_NAME:-liferadar}
       LIFE_RADAR_DB_USER: ${LIFE_RADAR_DB_USER:-liferadar}
@@ -78,6 +58,3 @@ networks:
     external: true
   coolify:
     external: true
-
-volumes:
-  liferadar-data:
