@@ -33,8 +33,8 @@ services:
       LIFE_RADAR_DB_USER: ${LIFE_RADAR_DB_USER:-liferadar}
       LIFE_RADAR_DB_PASSWORD: ${LIFE_RADAR_DB_PASSWORD}
       LIFE_RADAR_API_URL: http://liferadar-api:8000
-    expose:
-      - "8090"
+    ports:
+      - "8090:8090"
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.liferadar-mcp.rule=Host(`liferadar.nothing.pink`) && PathPrefix(/mcp)"
