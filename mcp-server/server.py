@@ -326,6 +326,7 @@ async def handle_mcp(request: Request):
         return JSONResponse(
             {"jsonrpc": "2.0", "error": {"code": -32603, "message": f"Internal error: {str(e)}"}},
             status_code=500
+        )
 
 
 async def process_jsonrpc_request(rpc_request: dict) -> dict | None:
