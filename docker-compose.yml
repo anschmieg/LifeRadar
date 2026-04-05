@@ -17,6 +17,62 @@ services:
     networks:
       - life-radar-net
 
+  life-radar-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: life-radar-api
+    environment:
+      LIFE_RADAR_DB_HOST: life-radar-db
+      LIFE_RADAR_DB_PORT: "5432"
+      LIFE_RADAR_DB_NAME: ${LIFE_RADAR_DB_NAME:-life_radar}
+      LIFE_RADAR_DB_USER: ${LIFE_RADAR_DB_USER:-life_radar}
+      LIFE_RADAR_DB_PASSWORD: ${LIFE_RADAR_DB_PASSWORD:?LifeRadar DB password required}
+    volumes:
+      - matrix-identity:/app/identity
+      - matrix-workspace:/app/workspace
+    depends_on:
+      life-radar-db:
+        condition: service_healthy
+    expose:
+      - "8000"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.liferadar-api.rule=Host(`liferadar.nothing.pink`)"
+      - "traefik.http.routers.liferadar-api.entrypoints=http"
+      - "traefik.http.services.liferadar-api.loadbalancer.server.port=8000"
+    networks:
+      - life-radar-net
+    restart: unless-stopped
+
+  life-radar-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp
+    container_name: life-radar-mcp
+    environment:
+      LIFE_RADAR_DB_HOST: life-radar-db
+      LIFE_RADAR_DB_PORT: "5432"
+      LIFE_RADAR_DB_NAME: ${LIFE_RADAR_DB_NAME:-life_radar}
+      LIFE_RADAR_DB_USER: ${LIFE_RADAR_DB_USER:-life_radar}
+      LIFE_RADAR_DB_PASSWORD: ${LIFE_RADAR_DB_PASSWORD:?LifeRadar DB password required}
+    volumes:
+      - matrix-identity:/app/identity
+      - matrix-workspace:/app/workspace
+    depends_on:
+      life-radar-db:
+        condition: service_healthy
+    expose:
+      - "8090"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.liferadar-mcp.rule=Host(`liferadar.nothing.pink`) && PathPrefix(`/mcp`)"
+      - "traefik.http.routers.liferadar-mcp.entrypoints=http"
+      - "traefik.http.services.liferadar-mcp.loadbalancer.server.port=8090"
+    networks:
+      - life-radar-net
+    restart: unless-stopped
+
   life-radar-worker:
     build:
       context: .
