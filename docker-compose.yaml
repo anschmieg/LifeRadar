@@ -1,4 +1,35 @@
+# DEPLOYMENT NOTES FOR COOLIFY
+# Uses SUBDOMAIN routing to avoid Coolify path shadowing
+# Required DNS:
+#   - liferadar.nothing.pink → server IP
+#   - mcp.liferadar.nothing.pink → server IP
+
 services:
+  life-radar-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: life-radar-api
+    environment:
+      LIFE_RADAR_DB_HOST: host.docker.internal
+      LIFE_RADAR_DB_PORT: "5432"
+      LIFE_RADAR_DB_NAME: liferadar
+      LIFE_RADAR_DB_USER: liferadar
+      LIFE_RADAR_DB_PASSWORD: ""
+    expose:
+      - "8000"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.liferadar-api.rule=Host(`liferadar.nothing.pink`)"
+      - "traefik.http.routers.liferadar-api.entrypoints=https"
+      - "traefik.http.routers.liferadar-api.tls=true"
+      - "traefik.http.routers.liferadar-api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.liferadar-api.loadbalancer.server.port=8000"
+      - "traefik.docker.network=coolify"
+    networks:
+      - coolify
+    restart: unless-stopped
+
   life-radar-mcp:
     build:
       context: .
@@ -7,24 +38,47 @@ services:
     environment:
       LIFE_RADAR_DB_HOST: host.docker.internal
       LIFE_RADAR_DB_PORT: "5432"
-      LIFE_RADAR_DB_NAME: ${LIFE_RADAR_DB_NAME:-liferadar}
-      LIFE_RADAR_DB_USER: ${LIFE_RADAR_DB_USER:-liferadar}
-      LIFE_RADAR_DB_PASSWORD: ${LIFE_RADAR_DB_PASSWORD}
-      LIFE_RADAR_API_URL: http://liferadar-api:8000
+      LIFE_RADAR_DB_NAME: liferadar
+      LIFE_RADAR_DB_USER: liferadar
+      LIFE_RADAR_DB_PASSWORD: ""
+      LIFE_RADAR_API_URL: http://life-radar-api:8000
     expose:
       - "8090"
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.liferadar-mcp.rule=Host(`liferadar.nothing.pink`) && PathPrefix(/mcp)"
+      - "traefik.http.routers.liferadar-mcp.rule=Host(`mcp.liferadar.nothing.pink`)"
       - "traefik.http.routers.liferadar-mcp.entrypoints=https"
       - "traefik.http.routers.liferadar-mcp.tls=true"
-      - "traefik.http.routers.liferadar-mcp.priority=100"
-      - "traefik.docker.network=coolify"
+      - "traefik.http.routers.liferadar-mcp.tls.certresolver=letsencrypt"
       - "traefik.http.services.liferadar-mcp.loadbalancer.server.port=8090"
+      - "traefik.docker.network=coolify"
     networks:
       - coolify
     restart: unless-stopped
+    depends_on:
+      - life-radar-api
+
+  life-radar-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: life-radar-worker
+    environment:
+      LIFE_RADAR_DB_HOST: host.docker.internal
+      LIFE_RADAR_DB_PORT: "5432"
+      LIFE_RADAR_DB_NAME: liferadar
+      LIFE_RADAR_DB_USER: liferadar
+      LIFE_RADAR_DB_PASSWORD: ""
+      LIFE_RADAR_API_URL: http://life-radar-api:8000
+    expose:
+      - "8080"
+    networks:
+      - coolify
+    restart: unless-stopped
+    depends_on:
+      - life-radar-api
 
 networks:
   coolify:
     external: true
+    name: coolify
