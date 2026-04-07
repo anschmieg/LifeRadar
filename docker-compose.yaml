@@ -24,11 +24,11 @@ services:
       - "host.docker.internal:host-gateway"
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.liferadar-api.rule=Host(`liferadar.nothing.pink`)"
-      - "traefik.http.routers.liferadar-api.entrypoints=https"
-      - "traefik.http.routers.liferadar-api.tls=true"
-      - "traefik.http.routers.liferadar-api.tls.certresolver=letsencrypt"
-      - "traefik.http.services.liferadar-api.loadbalancer.server.port=8000"
+      - "traefik.http.routers.liferadar-compose-api.rule=Host(`liferadar.nothing.pink`)"
+      - "traefik.http.routers.liferadar-compose-api.entrypoints=https"
+      - "traefik.http.routers.liferadar-compose-api.tls=true"
+      - "traefik.http.routers.liferadar-compose-api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.liferadar-compose-api.loadbalancer.server.port=8000"
       - "traefik.docker.network=coolify"
     networks:
       - coolify
@@ -53,11 +53,11 @@ services:
       - "host.docker.internal:host-gateway"
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.liferadar-mcp.rule=Host(`mcp.liferadar.nothing.pink`)"
-      - "traefik.http.routers.liferadar-mcp.entrypoints=https"
-      - "traefik.http.routers.liferadar-mcp.tls=true"
-      - "traefik.http.routers.liferadar-mcp.tls.certresolver=letsencrypt"
-      - "traefik.http.services.liferadar-mcp.loadbalancer.server.port=8090"
+      - "traefik.http.routers.liferadar-compose-mcp.rule=Host(`mcp.liferadar.nothing.pink`)"
+      - "traefik.http.routers.liferadar-compose-mcp.entrypoints=https"
+      - "traefik.http.routers.liferadar-compose-mcp.tls=true"
+      - "traefik.http.routers.liferadar-compose-mcp.tls.certresolver=letsencrypt"
+      - "traefik.http.services.liferadar-compose-mcp.loadbalancer.server.port=8090"
       - "traefik.docker.network=coolify"
     networks:
       - coolify
