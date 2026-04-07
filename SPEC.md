@@ -201,6 +201,8 @@ probe-status     GET  /probe-status
   per-conversation high-water marks stored as `matrix_room_checkpoint` in `conversations.metadata`.
 - The API now supports real Matrix sends through an internal Matrix bridge service and protects
   write/MCP access with `LIFE_RADAR_API_KEY` when configured.
+- Public MCP access is path-based via `https://liferadar.nothing.pink/mcp`; the MCP container is
+  intended to stay internal-only behind the API proxy.
 
 ### TODO
 

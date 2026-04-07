@@ -1,8 +1,8 @@
 # DEPLOYMENT NOTES FOR COOLIFY
-# Uses SUBDOMAIN routing to avoid Coolify path shadowing
+# Public traffic terminates at liferadar.nothing.pink only.
+# MCP is exposed via the API proxy at /mcp, not a separate subdomain.
 # Required DNS:
 #   - liferadar.nothing.pink → server IP
-#   - mcp.liferadar.nothing.pink → server IP
 
 services:
   life-radar-api:
@@ -51,14 +51,6 @@ services:
       - "8090"
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.liferadar-compose-mcp.rule=Host(`mcp.liferadar.nothing.pink`)"
-      - "traefik.http.routers.liferadar-compose-mcp.entrypoints=https"
-      - "traefik.http.routers.liferadar-compose-mcp.tls=true"
-      - "traefik.http.routers.liferadar-compose-mcp.tls.certresolver=letsencrypt"
-      - "traefik.http.services.liferadar-compose-mcp.loadbalancer.server.port=8090"
-      - "traefik.docker.network=coolify"
     networks:
       - coolify
     restart: unless-stopped

@@ -18,6 +18,8 @@ docker compose logs -f worker
 
 If you set `LIFE_RADAR_API_KEY`, include it as `Authorization: Bearer ...` or `X-API-Key`
 when calling write endpoints such as `POST /messages/send` or when proxying through `/mcp`.
+In production, MCP is exposed at `https://liferadar.nothing.pink/mcp`; do not publish a
+separate MCP subdomain.
 
 ## Architecture
 
