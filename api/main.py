@@ -416,7 +416,7 @@ async def get_tasks(
                 """SELECT * FROM life_radar.planned_actions
                    ORDER BY scheduled_start ASC NULLS LAST
                    LIMIT $1""",
-                None, limit,
+                limit,
             )
         return _records_to_models(PlannedAction, rows)
 
@@ -680,8 +680,8 @@ async def search(
                FROM life_radar.message_events
                WHERE content_text ILIKE $1
                ORDER BY occurred_at DESC
-               LIMIT $3""",
-            likq, None, limit,
+               LIMIT $2""",
+            likq, limit,
         )
         for m in msgs:
             results.append(SearchResult(
@@ -696,8 +696,8 @@ async def search(
             """SELECT id, 'memory' as type, title as subject, summary as body, confidence
                FROM life_radar.memory_records
                WHERE title ILIKE $1 OR summary ILIKE $1 OR detail ILIKE $1
-               LIMIT $3""",
-            likq, None, limit,
+               LIMIT $2""",
+            likq, limit,
         )
         for m in mems:
             results.append(SearchResult(
