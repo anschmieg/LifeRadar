@@ -11,7 +11,7 @@ COPY matrix-rust-probe/Cargo.lock ./Cargo.lock
 COPY matrix-rust-probe/src ./src
 RUN cargo chef prepare --recipe-path /build/recipe.json --bin life-radar-matrix-rust-probe
 
-FROM rust:1.88-slim-bookworm AS rust-build
+FROM cargo-chef AS rust-build
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
@@ -26,9 +26,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 WORKDIR /build
 COPY --from=planner /build/recipe.json recipe.json
-RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
-    cargo install cargo-chef --locked --version ^0.1
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/build/target,sharing=locked \
