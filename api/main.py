@@ -38,8 +38,6 @@ from api.models import (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: create connection pool
-    await get_pool()
     yield
     # Shutdown: close pool
     await close_pool()
