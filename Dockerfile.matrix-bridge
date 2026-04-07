@@ -48,20 +48,26 @@ FROM python:3.12-slim-bookworm AS builder
 WORKDIR /app
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_DEFAULT_TIMEOUT=120
+    PIP_DEFAULT_TIMEOUT=120 \
+    VIRTUAL_ENV=/opt/venv \
+    PATH=/opt/venv/bin:$PATH
 
-COPY api/requirements.txt .
+RUN python -m venv "$VIRTUAL_ENV"
+
+COPY api/requirements.bridge.txt .
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -r requirements.txt
+    pip install --no-compile -r requirements.bridge.txt
 
-COPY api/ ./api/
+COPY api/matrix_bridge.py ./api/matrix_bridge.py
 
 FROM python:3.12-slim-bookworm
 
 WORKDIR /app
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    VIRTUAL_ENV=/opt/venv \
+    PATH=/opt/venv/bin:$PATH
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
@@ -70,8 +76,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     libsqlite3-0 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
+COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /app/api/ ./api/
 COPY --from=rust-build /build/life-radar-matrix-rust-probe /usr/local/bin/life-radar-matrix-rust-probe
 

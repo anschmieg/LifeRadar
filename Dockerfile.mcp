@@ -6,23 +6,27 @@ FROM python:3.12-slim-bookworm AS builder
 WORKDIR /app
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_DEFAULT_TIMEOUT=120
+    PIP_DEFAULT_TIMEOUT=120 \
+    VIRTUAL_ENV=/opt/venv \
+    PATH=/opt/venv/bin:$PATH
+
+RUN python -m venv "$VIRTUAL_ENV"
 
 COPY mcp-server/requirements.txt ./requirements.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -r requirements.txt
+    pip install --no-compile -r requirements.txt
 
 COPY mcp-server/ ./mcp-server/
 
-# Production runtime
 FROM python:3.12-slim-bookworm
 
 WORKDIR /app
 
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    VIRTUAL_ENV=/opt/venv \
+    PATH=/opt/venv/bin:$PATH
 
-COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
+COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /app/mcp-server/ ./mcp-server/
 
 ENV PYTHONUNBUFFERED=1
