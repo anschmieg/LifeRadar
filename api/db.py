@@ -12,9 +12,9 @@ async def get_pool() -> asyncpg.Pool:
     if _pool is None:
         host = os.environ.get("LIFE_RADAR_DB_HOST", "localhost")
         port = int(os.environ.get("LIFE_RADAR_DB_PORT", "5432"))
-        user = os.environ.get("LIFE_RADAR_DB_USER", "liferadar")
+        user = os.environ.get("LIFE_RADAR_DB_USER", "life_radar")
         password = os.environ.get("LIFE_RADAR_DB_PASSWORD", "")
-        database = os.environ.get("LIFE_RADAR_DB_NAME", "liferadar")
+        database = os.environ.get("LIFE_RADAR_DB_NAME", "life_radar")
 
         _pool = await asyncpg.create_pool(
             host=host,

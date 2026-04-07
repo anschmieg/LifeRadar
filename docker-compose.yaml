@@ -13,8 +13,8 @@ services:
     environment:
       LIFE_RADAR_DB_HOST: "${LIFE_RADAR_DB_HOST:-host.docker.internal}"
       LIFE_RADAR_DB_PORT: "${LIFE_RADAR_DB_PORT:-5432}"
-      LIFE_RADAR_DB_NAME: "${LIFE_RADAR_DB_NAME:-liferadar}"
-      LIFE_RADAR_DB_USER: "${LIFE_RADAR_DB_USER:-liferadar}"
+      LIFE_RADAR_DB_NAME: "${LIFE_RADAR_DB_NAME:-life_radar}"
+      LIFE_RADAR_DB_USER: "${LIFE_RADAR_DB_USER:-life_radar}"
       LIFE_RADAR_DB_PASSWORD: "${LIFE_RADAR_DB_PASSWORD:-}"
       LIFE_RADAR_API_KEY: "${LIFE_RADAR_API_KEY:-}"
       LIFE_RADAR_MATRIX_BRIDGE_URL: http://life-radar-matrix-bridge:8010
@@ -42,8 +42,8 @@ services:
     environment:
       LIFE_RADAR_DB_HOST: "${LIFE_RADAR_DB_HOST:-host.docker.internal}"
       LIFE_RADAR_DB_PORT: "${LIFE_RADAR_DB_PORT:-5432}"
-      LIFE_RADAR_DB_NAME: "${LIFE_RADAR_DB_NAME:-liferadar}"
-      LIFE_RADAR_DB_USER: "${LIFE_RADAR_DB_USER:-liferadar}"
+      LIFE_RADAR_DB_NAME: "${LIFE_RADAR_DB_NAME:-life_radar}"
+      LIFE_RADAR_DB_USER: "${LIFE_RADAR_DB_USER:-life_radar}"
       LIFE_RADAR_DB_PASSWORD: "${LIFE_RADAR_DB_PASSWORD:-}"
       LIFE_RADAR_API_URL: http://life-radar-api:8000
       LIFE_RADAR_API_KEY: "${LIFE_RADAR_API_KEY:-}"
@@ -73,8 +73,8 @@ services:
     environment:
       LIFE_RADAR_DB_HOST: "${LIFE_RADAR_DB_HOST:-host.docker.internal}"
       LIFE_RADAR_DB_PORT: "${LIFE_RADAR_DB_PORT:-5432}"
-      LIFE_RADAR_DB_NAME: "${LIFE_RADAR_DB_NAME:-liferadar}"
-      LIFE_RADAR_DB_USER: "${LIFE_RADAR_DB_USER:-liferadar}"
+      LIFE_RADAR_DB_NAME: "${LIFE_RADAR_DB_NAME:-life_radar}"
+      LIFE_RADAR_DB_USER: "${LIFE_RADAR_DB_USER:-life_radar}"
       LIFE_RADAR_DB_PASSWORD: "${LIFE_RADAR_DB_PASSWORD:-}"
       LIFE_RADAR_MATRIX_RUST_RECOVER_HTTP_ON_FAILURE: "${LIFE_RADAR_MATRIX_RUST_RECOVER_HTTP_ON_FAILURE:-0}"
     expose:
@@ -93,8 +93,8 @@ services:
     environment:
       LIFE_RADAR_DB_HOST: "${LIFE_RADAR_DB_HOST:-host.docker.internal}"
       LIFE_RADAR_DB_PORT: "${LIFE_RADAR_DB_PORT:-5432}"
-      LIFE_RADAR_DB_NAME: "${LIFE_RADAR_DB_NAME:-liferadar}"
-      LIFE_RADAR_DB_USER: "${LIFE_RADAR_DB_USER:-liferadar}"
+      LIFE_RADAR_DB_NAME: "${LIFE_RADAR_DB_NAME:-life_radar}"
+      LIFE_RADAR_DB_USER: "${LIFE_RADAR_DB_USER:-life_radar}"
       LIFE_RADAR_DB_PASSWORD: "${LIFE_RADAR_DB_PASSWORD:-}"
     expose:
       - "8010"
