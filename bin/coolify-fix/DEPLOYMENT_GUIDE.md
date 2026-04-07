@@ -79,10 +79,13 @@ LIFE_RADAR_DB_NAME=liferadar
 LIFE_RADAR_DB_USER=liferadar
 LIFE_RADAR_DB_PASSWORD=YOUR_DB_PASSWORD
 LIFE_RADAR_API_KEY=generate_random_key
-MATRIX_HOMESERVER=https://matrix.org
-MATRIX_USER_ID=@youruser:matrix.org
-MATRIX_ACCESS_TOKEN=your_token
-MATRIX_DEVICE_ID=your_device
+LIFE_RADAR_MATRIX_BRIDGE_URL=http://life-radar-matrix-bridge:8010
+LIFE_RADAR_MATRIX_RUST_RECOVER_HTTP_ON_FAILURE=0
+MATRIX_RUST_SESSION_PATH=/path/to/matrix-session.json
+MATRIX_RUST_STORE=/path/to/matrix-rust-sdk-store
+MATRIX_E2EE_EXPORT_PATH=/path/to/beeper-e2e-keys.txt
+MATRIX_E2EE_EXPORT_PASSPHRASE_PATH=/path/to/.e2ee-export-passphrase
+MATRIX_RUST_KEY_IMPORT_MARKER=/path/to/room-key-import-marker.json
 OPENAI_API_KEY=sk-...
 ANTHROPIC_API_KEY=sk-ant-...
 ```
@@ -116,6 +119,12 @@ curl -s http://localhost:8080/api/http/routers | grep liferadar
 ```bash
 # Test API
 curl https://liferadar.nothing.pink/health
+
+# Test authenticated send path shape (replace key/uuid)
+curl -X POST https://liferadar.nothing.pink/messages/send \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"conversation_id":"00000000-0000-0000-0000-000000000000","content_text":"test"}'
 
 # Test MCP
 curl https://mcp.liferadar.nothing.pink/
@@ -156,6 +165,7 @@ docker logs life-radar-mcp
 2. **Routing**: Changed from `PathPrefix(/mcp)` to `Host(mcp.liferadar.nothing.pink)`
 3. **Network**: All services use external `coolify` network managed by Coolify
 4. **SSL**: Let Coolify handle SSL via certresolver=letsencrypt
+5. **Matrix Send/Auth**: API calls an internal Matrix bridge service and write/MCP access can be protected with `LIFE_RADAR_API_KEY`
 
 ## Rollback Plan
 

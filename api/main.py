@@ -2,13 +2,15 @@
 LifeRadar API Server — FastAPI
 """
 import os
+import secrets
+import asyncpg
 import httpx
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
-from fastapi import FastAPI, Query, HTTPException, Request
+from fastapi import FastAPI, Query, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, JSONResponse
 from starlette.requests import Request as StarletteRequest
@@ -59,6 +61,67 @@ app.add_middleware(
 )
 
 MCP_URL = os.environ.get("LIFE_RADAR_MCP_URL", "http://liferadar-mcp:8090")
+MATRIX_BRIDGE_URL = os.environ.get(
+    "LIFE_RADAR_MATRIX_BRIDGE_URL", "http://life-radar-matrix-bridge:8010"
+)
+
+
+def _expected_api_key() -> str:
+    return os.environ.get("LIFE_RADAR_API_KEY", "").strip()
+
+
+def _provided_api_key(request: Request) -> str:
+    bearer = request.headers.get("authorization", "")
+    if bearer.lower().startswith("bearer "):
+        return bearer[7:].strip()
+    return request.headers.get("x-api-key", "").strip()
+
+
+def require_api_key(request: Request) -> None:
+    expected = _expected_api_key()
+    if not expected:
+        return
+    provided = _provided_api_key(request)
+    if not provided or not secrets.compare_digest(provided, expected):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid API key",
+        )
+
+
+async def load_conversation_for_send(conversation_id: UUID) -> asyncpg.Record:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, source, external_id FROM life_radar.conversations WHERE id = $1",
+            conversation_id,
+        )
+    if not row:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return row
+
+
+async def run_matrix_send(room_id: str, content_text: str) -> str:
+    try:
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            response = await client.post(
+                f"{MATRIX_BRIDGE_URL.rstrip('/')}/send",
+                json={"room_id": room_id, "content_text": content_text},
+            )
+    except httpx.ConnectError as exc:
+        raise HTTPException(status_code=503, detail="Matrix bridge is unavailable") from exc
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail="Matrix send timed out") from exc
+
+    if response.status_code >= 400:
+        detail = response.text[:400]
+        raise HTTPException(status_code=502, detail=detail or "matrix send failed")
+
+    payload = response.json()
+    event_id = payload.get("event_id")
+    if not event_id:
+        raise HTTPException(status_code=502, detail="Matrix bridge did not return an event_id")
+    return str(event_id)
 
 
 # --- MCP proxy (Streamable HTTP) ---
@@ -66,6 +129,7 @@ MCP_URL = os.environ.get("LIFE_RADAR_MCP_URL", "http://liferadar-mcp:8090")
 @app.api_route("/mcp", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def proxy_to_mcp(request: Request, path: str = ""):
     """Proxy MCP requests to the MCP server container."""
+    require_api_key(request)
     target_url = f"{MCP_URL}/{path}" if path else f"{MCP_URL}/"
     headers = dict(request.headers)
     headers.pop("host", None)
@@ -332,8 +396,9 @@ async def get_tasks(
 
 
 @app.post("/tasks", response_model=PlannedAction)
-async def create_task(task: TaskCreate):
+async def create_task(task: TaskCreate, request: Request):
     """Create a new task (planned action)."""
+    require_api_key(request)
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -391,12 +456,13 @@ async def get_calendar_events(
 
 
 @app.post("/calendar/events", response_model=PlannedAction)
-async def upsert_calendar_event(event: CalendarEventUpsert):
+async def upsert_calendar_event(event: CalendarEventUpsert, request: Request):
     """
     Upsert a calendar event into planned_actions.
     If calendar_external_id is provided, updates existing event with that external_id.
     If not provided, inserts a new event.
     """
+    require_api_key(request)
     pool = await get_pool()
     async with pool.acquire() as conn:
         if event.calendar_external_id:
@@ -442,33 +508,21 @@ async def upsert_calendar_event(event: CalendarEventUpsert):
 
 
 @app.post("/messages/send", response_model=MessageSendResponse)
-async def send_message(request: MessageSendRequest):
+async def send_message(request: MessageSendRequest, http_request: Request):
     """
     Send a message via Matrix/Outlook (user-approved only).
-    
-    This is a stub implementation that logs the send intent and returns a queued status.
-    Full Matrix sending requires the Rust E2EE binary with access token, which the worker provides.
-    To send via Matrix, the conversation must have a Matrix room_id stored in external_id.
     """
-    import sys
-    import uuid
+    require_api_key(http_request)
+    conversation = await load_conversation_for_send(request.conversation_id)
 
-    message_id = str(uuid.uuid4())
+    if conversation["source"] == "matrix":
+        message_id = await run_matrix_send(conversation["external_id"], request.content_text)
+        return MessageSendResponse(status="sent", message_id=message_id)
 
-    # Log the send intent
-    print(
-        f"[messages/send] queued: conversation_id={request.conversation_id} "
-        f"message_id={message_id} content_text={request.content_text[:50]!r}...",
-        file=sys.stderr,
+    raise HTTPException(
+        status_code=501,
+        detail=f"Sending messages for source '{conversation['source']}' is not implemented",
     )
-
-    # TODO: Full implementation requires:
-    # 1. Look up conversation to get Matrix room_id from external_id
-    # 2. Use Matrix REST API with access token to send the message
-    # 3. The Rust E2EE binary at /usr/local/bin/life-radar-matrix-rust-probe handles E2EE
-    # For now, we log and return queued status
-
-    return MessageSendResponse(status="queued", message_id=message_id)
 
 
 # --- /memories ---

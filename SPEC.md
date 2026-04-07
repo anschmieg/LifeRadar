@@ -24,6 +24,10 @@ power an AI agent (Hermes).
 │  │                 │  │  ├─ derive-needs-state.sh (triage) │  │
 │  │                 │  │  └─ extract-memory.mjs            │  │
 │  └─────────────────┘  └──────────────┬───────────────────┘  │
+│  ┌───────────────────────────────────┐                       │
+│  │  life-radar-matrix-bridge         │                       │
+│  │  Internal Matrix send helper      │                       │
+│  └───────────────────────────────────┘                       │
 │                                      │                       │
 │  ┌───────────────────────────────────▼───────────────────┐  │
 │  │  life-radar-api  (Phase 2)                           │  │
@@ -136,7 +140,7 @@ GET   /tasks                list planned_actions
 POST  /tasks                create task
 GET   /calendar/events      read Google Calendar (date range)
 POST  /calendar/events      upsert calendar event
-POST  /messages/send        send Matrix/Outlook message (user-approved only)
+POST  /messages/send        send Matrix message (user-approved only; non-matrix returns 501 for now)
 GET   /search               semantic search over memories + conversations
 GET   /probe-status         probe health + last-run timestamps
 ```
@@ -148,7 +152,7 @@ GET   /probe-status         probe health + last-run timestamps
 - [ ] Implement each endpoint with `asyncpg`
 - [ ] Add OpenAPI route at `/openapi.json`
 - [ ] Write `Dockerfile.api` (or extend `Dockerfile.worker` with multi-target)
-- [ ] Add API key auth (HMAC or static key for Hermes → API calls)
+- [x] Add API key auth (HMAC or static key for Hermes → API calls)
 - [ ] Add Docker Compose service entry for `life-radar-api`
 - [ ] Update `.env.example` with API server port variable
 
@@ -188,6 +192,15 @@ send-message     POST /messages/send
 search           GET  /search
 probe-status     GET  /probe-status
 ```
+
+### Current Connector Notes
+
+- Matrix/Beeper ingest uses `matrix-rust-sdk` as the primary transport and keeps the HTTP Matrix
+  path as an explicit `recover_http` recovery mode only.
+- Matrix sync state is persisted in `runtime_metadata` under `matrix_sync_checkpoint`, with
+  per-conversation high-water marks stored as `matrix_room_checkpoint` in `conversations.metadata`.
+- The API now supports real Matrix sends through an internal Matrix bridge service and protects
+  write/MCP access with `LIFE_RADAR_API_KEY` when configured.
 
 ### TODO
 

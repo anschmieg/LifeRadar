@@ -16,6 +16,8 @@ services:
       LIFE_RADAR_DB_NAME: liferadar
       LIFE_RADAR_DB_USER: liferadar
       LIFE_RADAR_DB_PASSWORD: ""
+      LIFE_RADAR_API_KEY: "${LIFE_RADAR_API_KEY:-}"
+      LIFE_RADAR_MATRIX_BRIDGE_URL: http://life-radar-matrix-bridge:8010
     expose:
       - "8000"
     labels:
@@ -42,6 +44,7 @@ services:
       LIFE_RADAR_DB_USER: liferadar
       LIFE_RADAR_DB_PASSWORD: ""
       LIFE_RADAR_API_URL: http://life-radar-api:8000
+      LIFE_RADAR_API_KEY: "${LIFE_RADAR_API_KEY:-}"
     expose:
       - "8090"
     labels:
@@ -69,14 +72,29 @@ services:
       LIFE_RADAR_DB_NAME: liferadar
       LIFE_RADAR_DB_USER: liferadar
       LIFE_RADAR_DB_PASSWORD: ""
-      LIFE_RADAR_API_URL: http://life-radar-api:8000
+      LIFE_RADAR_MATRIX_RUST_RECOVER_HTTP_ON_FAILURE: "${LIFE_RADAR_MATRIX_RUST_RECOVER_HTTP_ON_FAILURE:-0}"
     expose:
       - "8080"
     networks:
       - coolify
     restart: unless-stopped
-    depends_on:
-      - life-radar-api
+
+  life-radar-matrix-bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile.matrix-bridge
+    container_name: life-radar-matrix-bridge
+    environment:
+      LIFE_RADAR_DB_HOST: host.docker.internal
+      LIFE_RADAR_DB_PORT: "5432"
+      LIFE_RADAR_DB_NAME: liferadar
+      LIFE_RADAR_DB_USER: liferadar
+      LIFE_RADAR_DB_PASSWORD: ""
+    expose:
+      - "8010"
+    networks:
+      - coolify
+    restart: unless-stopped
 
 networks:
   coolify:

@@ -16,12 +16,25 @@ docker compose up -d
 docker compose logs -f worker
 ```
 
+If you set `LIFE_RADAR_API_KEY`, include it as `Authorization: Bearer ...` or `X-API-Key`
+when calling write endpoints such as `POST /messages/send` or when proxying through `/mcp`.
+
 ## Architecture
 
 - **life-radar-worker** — probe pipeline running every 5 minutes
 - **life-radar-db** — pgvector:pg17 with 15 tables
 - **life-radar-api** (Phase 2) — FastAPI HTTP API
+- **life-radar-matrix-bridge** — internal Matrix send bridge
 - **MCP server** (Phase 3) — OpenAPI-generated MCP tools for Hermes
+
+## Connector Notes
+
+- Matrix/Beeper uses `matrix-rust-sdk` as the primary E2EE transport.
+- Matrix sync now persists a global `matrix_sync_checkpoint` plus per-conversation
+  `matrix_room_checkpoint` metadata to avoid re-walking full history each cycle.
+- The raw HTTP Matrix path is retained as an explicit recovery mode, not the normal ingest path.
+- `POST /messages/send` performs a real Matrix send for `source='matrix'` by calling the internal
+  Matrix bridge service; other sources currently return `501 Not Implemented`.
 
 ## Phases
 
