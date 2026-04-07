@@ -25,6 +25,7 @@ LIFE_RADAR_API_URL = os.environ.get(
     "LIFE_RADAR_API_URL",
     "http://host.docker.internal:8000"
 )
+LIFE_RADAR_PUBLIC_API_URL = os.environ.get("LIFE_RADAR_PUBLIC_API_URL", "").strip()
 
 APP_NAME = "liferadar-mcp"
 VERSION = "1.0.0"
@@ -34,26 +35,48 @@ server = Server(APP_NAME)
 
 # ── MCP tool definitions ──────────────────────────────────────────────────────
 
+def _normalize_api_response(data: Any) -> list[dict]:
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        return [data]
+    return [{"result": str(data)}]
+
+
+async def _get_json(url: str, params: dict | None = None) -> list[dict]:
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(url, params=params or {})
+        response.raise_for_status()
+        return _normalize_api_response(response.json())
+
+
 async def call_api(path: str, params: dict | None = None) -> list[dict]:
     """Make a GET request to the LifeRadar API and return parsed JSON."""
-    url = f"{LIFE_RADAR_API_URL.rstrip('/')}/{path.lstrip('/')}"
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            response = await client.get(url, params=params or {})
-            response.raise_for_status()
-            data = response.json()
-            if isinstance(data, list):
-                return data
-            elif isinstance(data, dict):
-                return [data]
-            else:
-                return [{"result": str(data)}]
-        except httpx.HTTPStatusError as e:
-            return [{"error": f"HTTP {e.response.status_code}: {e.response.text[:200]}"}]
-        except httpx.ConnectError:
-            return [{"error": f"Could not connect to LifeRadar API at {url}. Is the API running?"}]
-        except Exception as e:
-            return [{"error": str(e)}]
+    path = path.lstrip("/")
+    primary_url = f"{LIFE_RADAR_API_URL.rstrip('/')}/{path}"
+    fallback_url = (
+        f"{LIFE_RADAR_PUBLIC_API_URL.rstrip('/')}/{path}"
+        if LIFE_RADAR_PUBLIC_API_URL
+        else ""
+    )
+    try:
+        return await _get_json(primary_url, params)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code >= 500 and fallback_url:
+            try:
+                return await _get_json(fallback_url, params)
+            except Exception:
+                pass
+        return [{"error": f"HTTP {e.response.status_code}: {e.response.text[:200]}"}]
+    except httpx.ConnectError:
+        if fallback_url:
+            try:
+                return await _get_json(fallback_url, params)
+            except Exception:
+                pass
+        return [{"error": f"Could not connect to LifeRadar API at {primary_url}. Is the API running?"}]
+    except Exception as e:
+        return [{"error": str(e)}]
 
 
 async def call_api_post(path: str, body: dict | None = None) -> list[dict]:

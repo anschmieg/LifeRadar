@@ -4,7 +4,7 @@
 
 This guide fixes the two critical infrastructure issues:
 1. Docker Runtime Broken (OCI sysctl permission denied)
-2. Coolify Traefik Path-Based Routing Shadowed
+2. Coolify path-based MCP exposure via the main LifeRadar host
 
 ## Prerequisites
 
@@ -42,16 +42,15 @@ Add these DNS A/AAAA records:
 | Record | Type | Value |
 |--------|------|-------|
 | liferadar.nothing.pink | A | YOUR_SERVER_IP |
-| mcp.liferadar.nothing.pink | A | YOUR_SERVER_IP |
 
 Wait for DNS propagation (check with: dig liferadar.nothing.pink)
 
 ## Step 3: Update docker-compose.yaml
 
-The repository now contains the fixed docker-compose.yaml with subdomain routing:
+The repository now contains the fixed docker-compose.yaml with path-based MCP exposure:
 
 - `liferadar.nothing.pink` → API service (port 8000)
-- `mcp.liferadar.nothing.pink` → MCP service (port 8090)
+- `liferadar.nothing.pink/mcp` → MCP proxy path on the API service
 
 ## Step 4: Deploy via Coolify
 
@@ -126,8 +125,8 @@ curl -X POST https://liferadar.nothing.pink/messages/send \
   -H "Content-Type: application/json" \
   -d '{"conversation_id":"00000000-0000-0000-0000-000000000000","content_text":"test"}'
 
-# Test MCP
-curl https://mcp.liferadar.nothing.pink/
+# Test MCP health through the main host
+curl https://liferadar.nothing.pink/mcp/health
 ```
 
 ## Troubleshooting
@@ -162,7 +161,7 @@ docker logs life-radar-mcp
 ## Key Changes Made
 
 1. **Docker Runtime**: Disabled iptables manipulation in Docker daemon config
-2. **Routing**: Changed from `PathPrefix(/mcp)` to `Host(mcp.liferadar.nothing.pink)`
+2. **Routing**: MCP is exposed at `liferadar.nothing.pink/mcp`, not a separate subdomain
 3. **Network**: All services use external `coolify` network managed by Coolify
 4. **SSL**: Let Coolify handle SSL via certresolver=letsencrypt
 5. **Matrix Send/Auth**: API calls an internal Matrix bridge service and write/MCP access can be protected with `LIFE_RADAR_API_KEY`
@@ -173,4 +172,4 @@ If issues persist:
 1. Delete Coolify resource
 2. Restore original docker-compose.yaml: `git checkout docker-compose.yaml`
 3. Revert Docker changes: `sudo rm /etc/docker/daemon.json &amp;&amp; sudo systemctl restart docker`
-4. Try path-based routing with manual Traefik config (advanced)
+4. Verify the API proxy exposes `/mcp` on the main host (advanced)

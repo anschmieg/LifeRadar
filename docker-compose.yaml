@@ -46,6 +46,7 @@ services:
       LIFE_RADAR_DB_USER: "${LIFE_RADAR_DB_USER:-life_radar}"
       LIFE_RADAR_DB_PASSWORD: "${LIFE_RADAR_DB_PASSWORD:-}"
       LIFE_RADAR_API_URL: http://life-radar-api:8000
+      LIFE_RADAR_PUBLIC_API_URL: "${LIFE_RADAR_PUBLIC_API_URL:-}"
       LIFE_RADAR_API_KEY: "${LIFE_RADAR_API_KEY:-}"
     expose:
       - "8090"
