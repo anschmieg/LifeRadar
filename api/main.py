@@ -2,6 +2,7 @@
 LifeRadar API Server — FastAPI
 """
 import os
+import logging
 import secrets
 import asyncpg
 import httpx
@@ -15,7 +16,7 @@ from fastapi import FastAPI, Query, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, JSONResponse
 from starlette.requests import Request as StarletteRequest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from api.db import get_pool, close_pool
 from api.models import (
@@ -64,6 +65,8 @@ MATRIX_BRIDGE_URL = os.environ.get(
     "LIFE_RADAR_MATRIX_BRIDGE_URL", "http://life-radar-matrix-bridge:8010"
 )
 
+logger = logging.getLogger(__name__)
+
 
 def _normalize_db_value(value):
     if isinstance(value, Decimal):
@@ -77,6 +80,16 @@ def _normalize_db_value(value):
 
 def _record_to_model(model_cls, record):
     return model_cls(**{key: _normalize_db_value(value) for key, value in dict(record).items()})
+
+
+def _records_to_models(model_cls, records):
+    items = []
+    for record in records:
+        try:
+            items.append(_record_to_model(model_cls, record))
+        except ValidationError:
+            logger.exception("Skipping invalid %s record", model_cls.__name__)
+    return items
 
 
 def _expected_api_key() -> str:
@@ -279,7 +292,7 @@ async def get_conversations(
         """
         params.extend([limit, offset])
         rows = await conn.fetch(query, *params)
-        return [_record_to_model(Conversation, r) for r in rows]
+        return _records_to_models(Conversation, rows)
 
 
 @app.get("/conversations/{conversation_id}", response_model=Conversation)
@@ -327,7 +340,7 @@ async def get_messages(
         """
         params.extend([limit, offset])
         rows = await conn.fetch(query, *params)
-        return [_record_to_model(MessageEvent, r) for r in rows]
+        return _records_to_models(MessageEvent, rows)
 
 
 # --- /commitments ---
@@ -353,7 +366,7 @@ async def get_commitments(
                    LIMIT $1""",
                 limit,
             )
-        return [_record_to_model(Commitment, r) for r in rows]
+        return _records_to_models(Commitment, rows)
 
 
 # --- /reminders ---
@@ -379,7 +392,7 @@ async def get_reminders(
                    LIMIT $1""",
                 None, limit,
             )
-        return [_record_to_model(Reminder, r) for r in rows]
+        return _records_to_models(Reminder, rows)
 
 
 # --- /tasks (alias for planned_actions) ---
@@ -405,7 +418,7 @@ async def get_tasks(
                    LIMIT $1""",
                 None, limit,
             )
-        return [_record_to_model(PlannedAction, r) for r in rows]
+        return _records_to_models(PlannedAction, rows)
 
 
 @app.post("/tasks", response_model=PlannedAction)
@@ -465,7 +478,7 @@ async def get_calendar_events(
             LIMIT ${idx}
         """
         rows = await conn.fetch(query, *params)
-        return [_record_to_model(CalendarEvent, r) for r in rows]
+        return _records_to_models(CalendarEvent, rows)
 
 
 @app.post("/calendar/events", response_model=PlannedAction)
@@ -576,7 +589,7 @@ async def get_memories(
         """
         params.append(limit)
         rows = await conn.fetch(query, *params)
-        return [_record_to_model(MemoryRecord, r) for r in rows]
+        return _records_to_models(MemoryRecord, rows)
 
 
 # --- /probe-status ---
@@ -589,7 +602,7 @@ async def get_probe_status():
                ORDER BY observed_at DESC
                LIMIT 20"""
         )
-        return [_record_to_model(RuntimeProbe, r) for r in rows]
+        return _records_to_models(RuntimeProbe, rows)
 
 
 @app.get("/probe-status/candidates", response_model=list[MessagingCandidate])
@@ -599,7 +612,7 @@ async def get_probe_candidates():
         rows = await conn.fetch(
             "SELECT * FROM life_radar.messaging_candidates ORDER BY last_probe_at DESC"
         )
-        return [_record_to_model(MessagingCandidate, r) for r in rows]
+        return _records_to_models(MessagingCandidate, rows)
 
 
 # --- /search ---
