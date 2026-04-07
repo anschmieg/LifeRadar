@@ -5,6 +5,7 @@ import os
 import secrets
 import asyncpg
 import httpx
+from decimal import Decimal
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -62,6 +63,20 @@ MCP_URL = os.environ.get("LIFE_RADAR_MCP_URL", "http://liferadar-mcp:8090")
 MATRIX_BRIDGE_URL = os.environ.get(
     "LIFE_RADAR_MATRIX_BRIDGE_URL", "http://life-radar-matrix-bridge:8010"
 )
+
+
+def _normalize_db_value(value):
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, list):
+        return [_normalize_db_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _normalize_db_value(item) for key, item in value.items()}
+    return value
+
+
+def _record_to_model(model_cls, record):
+    return model_cls(**{key: _normalize_db_value(value) for key, value in dict(record).items()})
 
 
 def _expected_api_key() -> str:
@@ -264,7 +279,7 @@ async def get_conversations(
         """
         params.extend([limit, offset])
         rows = await conn.fetch(query, *params)
-        return [Conversation(**dict(r)) for r in rows]
+        return [_record_to_model(Conversation, r) for r in rows]
 
 
 @app.get("/conversations/{conversation_id}", response_model=Conversation)
@@ -276,7 +291,7 @@ async def get_conversation(conversation_id: UUID):
         )
         if not row:
             raise HTTPException(status_code=404, detail="Conversation not found")
-        return Conversation(**dict(row))
+        return _record_to_model(Conversation, row)
 
 
 # --- /messages ---
@@ -312,7 +327,7 @@ async def get_messages(
         """
         params.extend([limit, offset])
         rows = await conn.fetch(query, *params)
-        return [MessageEvent(**dict(r)) for r in rows]
+        return [_record_to_model(MessageEvent, r) for r in rows]
 
 
 # --- /commitments ---
@@ -338,7 +353,7 @@ async def get_commitments(
                    LIMIT $1""",
                 limit,
             )
-        return [Commitment(**dict(r)) for r in rows]
+        return [_record_to_model(Commitment, r) for r in rows]
 
 
 # --- /reminders ---
@@ -364,7 +379,7 @@ async def get_reminders(
                    LIMIT $1""",
                 None, limit,
             )
-        return [Reminder(**dict(r)) for r in rows]
+        return [_record_to_model(Reminder, r) for r in rows]
 
 
 # --- /tasks (alias for planned_actions) ---
@@ -390,7 +405,7 @@ async def get_tasks(
                    LIMIT $1""",
                 None, limit,
             )
-        return [PlannedAction(**dict(r)) for r in rows]
+        return [_record_to_model(PlannedAction, r) for r in rows]
 
 
 @app.post("/tasks", response_model=PlannedAction)
@@ -412,7 +427,7 @@ async def create_task(task: TaskCreate, request: Request):
             task.scheduled_end,
             task.effort_estimate_minutes,
         )
-        return PlannedAction(**dict(row))
+        return _record_to_model(PlannedAction, row)
 
 
 # --- /calendar/events ---
@@ -450,7 +465,7 @@ async def get_calendar_events(
             LIMIT ${idx}
         """
         rows = await conn.fetch(query, *params)
-        return [CalendarEvent(**dict(r)) for r in rows]
+        return [_record_to_model(CalendarEvent, r) for r in rows]
 
 
 @app.post("/calendar/events", response_model=PlannedAction)
@@ -502,7 +517,7 @@ async def upsert_calendar_event(event: CalendarEventUpsert, request: Request):
                 "calendar",
                 "scheduled",
             )
-        return PlannedAction(**dict(row))
+        return _record_to_model(PlannedAction, row)
 
 
 @app.post("/messages/send", response_model=MessageSendResponse)
@@ -561,7 +576,7 @@ async def get_memories(
         """
         params.append(limit)
         rows = await conn.fetch(query, *params)
-        return [MemoryRecord(**dict(r)) for r in rows]
+        return [_record_to_model(MemoryRecord, r) for r in rows]
 
 
 # --- /probe-status ---
@@ -574,7 +589,7 @@ async def get_probe_status():
                ORDER BY observed_at DESC
                LIMIT 20"""
         )
-        return [RuntimeProbe(**dict(r)) for r in rows]
+        return [_record_to_model(RuntimeProbe, r) for r in rows]
 
 
 @app.get("/probe-status/candidates", response_model=list[MessagingCandidate])
@@ -584,7 +599,7 @@ async def get_probe_candidates():
         rows = await conn.fetch(
             "SELECT * FROM life_radar.messaging_candidates ORDER BY last_probe_at DESC"
         )
-        return [MessagingCandidate(**dict(r)) for r in rows]
+        return [_record_to_model(MessagingCandidate, r) for r in rows]
 
 
 # --- /search ---
