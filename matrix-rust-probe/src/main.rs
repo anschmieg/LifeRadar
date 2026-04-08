@@ -52,6 +52,7 @@ struct ProbeConfig {
     report_dir: PathBuf,
     timeout_seconds: u64,
     mode: String,
+    inspect_room_id: Option<String>,
     recent_room_limit: usize,
     recent_message_limit: u32,
 }
@@ -96,6 +97,7 @@ impl ProbeConfig {
                 .parse()
                 .context("invalid LIFE_RADAR_MATRIX_RUST_TIMEOUT_SEC")?,
             mode: env_var("LIFE_RADAR_MATRIX_RUST_MODE", "probe"),
+            inspect_room_id: env::var("LIFE_RADAR_MATRIX_RUST_ROOM_ID").ok(),
             recent_room_limit: env_var("LIFE_RADAR_MATRIX_RUST_RECENT_ROOM_LIMIT", "5")
                 .parse()
                 .context("invalid LIFE_RADAR_MATRIX_RUST_RECENT_ROOM_LIMIT")?,
@@ -173,6 +175,16 @@ struct RecentMessage {
     body: String,
 }
 
+#[derive(Debug, Serialize)]
+struct InspectRoomReport {
+    requested_room_id: String,
+    sync_source: String,
+    room_found: bool,
+    joined_room_count: usize,
+    known_room_count: usize,
+    room: Option<RecentRoom>,
+}
+
 #[derive(Debug)]
 struct PersistedRoomState {
     last_event_ts_ms: Option<u64>,
@@ -198,6 +210,15 @@ async fn main() -> Result<()> {
             "{}",
             serde_json::to_string_pretty(&report)
                 .context("failed to serialize recent room report")?
+        );
+        return Ok(());
+    }
+    if cfg.mode == "inspect_room" {
+        let report = inspect_room(&cfg).await?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report)
+                .context("failed to serialize inspect room report")?
         );
         return Ok(());
     }
@@ -388,14 +409,36 @@ async fn inspect_recent_rooms(cfg: &ProbeConfig) -> Result<RecentRoomsReport> {
     let (client, session_file) = build_client(cfg).await?;
     maybe_import_room_keys(cfg, &client).await?;
 
-    let mut settings = SyncSettings::default().timeout(Duration::from_secs(cfg.timeout_seconds));
-    if let Some(token) = session_file.next_batch.clone() {
-        settings = settings.token(token);
+    let sync_attempts = build_sync_attempts(None, session_file.next_batch.clone());
+    let mut last_sync_error = None;
+    let mut synced = false;
+
+    for (source, token) in sync_attempts {
+        let mut settings =
+            SyncSettings::default().timeout(Duration::from_secs(cfg.timeout_seconds));
+        if let Some(token) = token {
+            settings = settings.token(token);
+        }
+
+        match client.sync_once(settings).await {
+            Ok(_) => {
+                eprintln!("inspect_recent sync_once succeeded via {source}");
+                synced = true;
+                break;
+            }
+            Err(err) => {
+                eprintln!("inspect_recent sync_once attempt {source} failed: {err:#}");
+                last_sync_error = Some(format!("{err:#}"));
+            }
+        }
     }
-    client
-        .sync_once(settings)
-        .await
-        .context("matrix rust sync_once failed in inspect_recent mode")?;
+
+    if !synced {
+        return Err(anyhow::anyhow!(
+            "matrix rust sync_once failed in inspect_recent mode after retries: {}",
+            last_sync_error.unwrap_or_else(|| "no sync attempt executed".to_string())
+        ));
+    }
 
     let mut rooms = Vec::new();
 
@@ -497,14 +540,163 @@ async fn inspect_recent_rooms(cfg: &ProbeConfig) -> Result<RecentRoomsReport> {
     Ok(RecentRoomsReport { rooms })
 }
 
+async fn inspect_room(cfg: &ProbeConfig) -> Result<InspectRoomReport> {
+    let requested_room_id = cfg
+        .inspect_room_id
+        .clone()
+        .context("missing LIFE_RADAR_MATRIX_RUST_ROOM_ID for inspect_room mode")?;
+    let room_id: OwnedRoomId = requested_room_id
+        .parse()
+        .context("invalid LIFE_RADAR_MATRIX_RUST_ROOM_ID")?;
+
+    let (client, session_file) = build_client(cfg).await?;
+    maybe_import_room_keys(cfg, &client).await?;
+
+    let sync_attempts = build_sync_attempts(None, session_file.next_batch.clone());
+    let mut last_sync_error = None;
+    let mut sync_source = "none".to_string();
+
+    for (source, token) in sync_attempts {
+        let mut settings =
+            SyncSettings::default().timeout(Duration::from_secs(cfg.timeout_seconds));
+        if let Some(token) = token {
+            settings = settings.token(token);
+        }
+
+        match client.sync_once(settings).await {
+            Ok(_) => {
+                sync_source = source.to_string();
+                break;
+            }
+            Err(err) => {
+                eprintln!("inspect_room sync_once attempt {source} failed: {err:#}");
+                last_sync_error = Some(format!("{err:#}"));
+            }
+        }
+    }
+
+    if sync_source == "none" {
+        return Err(anyhow::anyhow!(
+            "matrix rust sync_once failed in inspect_room mode after retries: {}",
+            last_sync_error.unwrap_or_else(|| "no sync attempt executed".to_string())
+        ));
+    }
+
+    let joined_room_count = client.joined_rooms().len();
+    let known_room_count = client.rooms().len();
+    let self_user_id = client.user_id();
+
+    let room = match client.get_room(&room_id) {
+        Some(room) => room,
+        None => {
+            return Ok(InspectRoomReport {
+                requested_room_id,
+                sync_source,
+                room_found: false,
+                joined_room_count,
+                known_room_count,
+                room: None,
+            });
+        }
+    };
+
+    let mut options = MessagesOptions::backward();
+    options.limit = uint!(50);
+
+    let messages = room
+        .messages(options)
+        .await
+        .context("matrix SDK room.messages failed in inspect_room mode")?;
+
+    let mut recent_messages = Vec::new();
+    let mut latest_timestamp_ms = 0_u64;
+
+    for event in messages.chunk.into_iter() {
+        let raw_json =
+            serde_json::from_str::<Value>(event.raw().json().get()).unwrap_or(Value::Null);
+        let event_type = raw_json.get("type").and_then(Value::as_str).unwrap_or("");
+        let ts_ms = raw_json
+            .get("origin_server_ts")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        latest_timestamp_ms = latest_timestamp_ms.max(ts_ms);
+
+        let body = raw_json
+            .get("content")
+            .and_then(|content| content.get("body"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let msgtype = raw_json
+            .get("content")
+            .and_then(|content| content.get("msgtype"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let event_id = raw_json
+            .get("event_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let sender = raw_json
+            .get("sender")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let decrypted = event.encryption_info().is_some();
+        let rendered_body = adapt_parse_timeline_event(
+            raw_json.clone(),
+            decrypted,
+            client.user_id().as_deref().map(|id| id.as_str()),
+            "matrix_rust_probe",
+        )
+        .map(|parsed| parsed.content_text)
+        .unwrap_or_else(|| {
+            if body.is_empty() {
+                "[non-text event]".to_string()
+            } else {
+                body
+            }
+        });
+        let kind = if msgtype.is_empty() {
+            event_type.to_string()
+        } else {
+            format!("{event_type}/{msgtype}")
+        };
+
+        recent_messages.push(RecentMessage {
+            event_id,
+            sender,
+            occurred_at: iso_from_unix_ms(ts_ms),
+            kind,
+            decrypted,
+            body: rendered_body,
+        });
+    }
+
+    recent_messages.sort_by(|left, right| left.occurred_at.cmp(&right.occurred_at));
+    let room_name = resolve_room_name(&room, self_user_id).await;
+
+    Ok(InspectRoomReport {
+        requested_room_id,
+        sync_source,
+        room_found: true,
+        joined_room_count,
+        known_room_count,
+        room: Some(RecentRoom {
+            room_id: room.room_id().to_string(),
+            room_name,
+            latest_timestamp_ms,
+            messages: recent_messages,
+        }),
+    })
+}
+
 async fn ingest_live_history(cfg: &ProbeConfig) -> Result<String> {
     try_sdk_ingest(cfg).await
 }
 
 async fn ingest_via_http(cfg: &ProbeConfig) -> Result<String> {
-    // Pure HTTP fallback: bypasses SDK sync_once entirely
-    // Uses reqwest for HTTP + serde_json::Value for flexible parsing
-
     let session_json = fs::read_to_string(&cfg.session_path)
         .with_context(|| format!("failed to read session at {}", cfg.session_path.display()))?;
     let session_file: SessionFile =
@@ -515,8 +707,6 @@ async fn ingest_via_http(cfg: &ProbeConfig) -> Result<String> {
         .timeout(Duration::from_secs(cfg.timeout_seconds))
         .build()
         .context("failed to build HTTP client")?;
-
-    let next_batch = session_file.next_batch.clone();
     let mut total_events = 0usize;
     let mut latest_seen = String::new();
     let self_user_id = session_file.user_id.clone();
@@ -582,40 +772,55 @@ async fn ingest_via_http(cfg: &ProbeConfig) -> Result<String> {
         )
         .await?;
 
-    // HTTP sync loop — call /_matrix/client/v3/sync
     let base_url = session_file.homeserver.trim_end_matches('/');
+    let persisted_sync_token = load_sync_checkpoint(&db).await?;
+    let sync_attempts = build_sync_attempts(persisted_sync_token, session_file.next_batch.clone());
+    let mut selected_sync_source = "full_sync";
+    let mut last_sync_error = None;
+    let mut sync_body = None;
 
-    // Collect all joined room IDs from sync responses
-    let mut joined_room_ids: Vec<String> = Vec::new();
-
-    // Do one initial sync to get room list
-    let sync_url = if let Some(ref token) = next_batch {
-        format!("{}/_matrix/client/v3/sync?_since={}", base_url, token)
-    } else {
-        format!("{}/_matrix/client/v3/sync", base_url)
-    };
-
-    eprintln!("HTTP sync request to {}", sync_url);
-    let resp = http_client
-        .get(&sync_url)
-        .header(
-            "Authorization",
-            format!("Bearer {}", session_file.access_token),
+    for (source, token) in sync_attempts {
+        match http_fetch_sync_json(
+            &http_client,
+            &session_file.access_token,
+            base_url,
+            token.as_deref(),
+            cfg.timeout_seconds,
         )
-        .send()
         .await
-        .context("http sync request failed")?;
-
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("HTTP sync returned {}: {}", status, body);
+        {
+            Ok(body) => {
+                selected_sync_source = source;
+                sync_body = Some(body);
+                break;
+            }
+            Err(err) => {
+                eprintln!("matrix http sync attempt {source} failed: {err:#}");
+                last_sync_error = Some(format!("{err:#}"));
+            }
+        }
     }
 
-    let sync_body: Value = resp
-        .json()
-        .await
-        .context("failed to parse sync response as JSON")?;
+    let sync_body = match sync_body {
+        Some(body) => body,
+        None => {
+            return Err(anyhow::anyhow!(
+                "matrix HTTP sync failed after retries: {}",
+                last_sync_error.unwrap_or_else(|| "no sync attempt executed".to_string())
+            ));
+        }
+    };
+
+    if let Some(next_batch) = sync_body.get("next_batch").and_then(Value::as_str) {
+        save_sync_checkpoint(
+            &db,
+            next_batch,
+            &format!("matrix-http-normalized:{selected_sync_source}"),
+        )
+        .await?;
+    }
+
+    let mut joined_room_ids: Vec<String> = Vec::new();
 
     // Extract joined rooms from sync response
     if let Some(rooms) = sync_body.get("rooms") {
@@ -782,7 +987,7 @@ async fn ingest_via_http(cfg: &ProbeConfig) -> Result<String> {
         "latest_seen": latest_seen,
         "candidate": cfg.candidate_id,
         "completed_at": iso_now(),
-        "runtime": "matrix-http-fallback"
+        "runtime": "matrix-http-normalized"
     })
     .to_string();
     db.execute(
@@ -792,9 +997,85 @@ async fn ingest_via_http(cfg: &ProbeConfig) -> Result<String> {
     .await?;
 
     Ok(format!(
-        "matrix HTTP ingest complete: rooms={} events={} latest_seen={}",
-        total_rooms, total_events, latest_seen
+        "matrix HTTP ingest complete: rooms={} events={} latest_seen={} sync_source={}",
+        total_rooms, total_events, latest_seen, selected_sync_source
     ))
+}
+
+async fn http_fetch_sync_json(
+    client: &HttpClient,
+    access_token: &str,
+    base_url: &str,
+    since: Option<&str>,
+    timeout_secs: u64,
+) -> Result<Value> {
+    let mut url = format!("{}/_matrix/client/v3/sync?timeout=0", base_url);
+    if let Some(token) = since {
+        url.push_str("&since=");
+        url.push_str(token);
+    }
+
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", access_token))
+        .timeout(Duration::from_secs(timeout_secs))
+        .send()
+        .await
+        .context("http sync request failed")?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("HTTP sync returned {}: {}", status, body);
+    }
+
+    let mut sync_body: Value = resp
+        .json()
+        .await
+        .context("failed to parse sync response as JSON")?;
+    normalize_sync_payload(&mut sync_body);
+    Ok(sync_body)
+}
+
+fn normalize_sync_payload(sync_body: &mut Value) {
+    ensure_events_container(sync_body.get_mut("account_data"));
+
+    if let Some(rooms) = sync_body.get_mut("rooms").and_then(Value::as_object_mut) {
+        for section_name in ["join", "leave", "invite", "knock"] {
+            let Some(section) = rooms.get_mut(section_name).and_then(Value::as_object_mut) else {
+                continue;
+            };
+
+            for room in section.values_mut() {
+                let Some(room_obj) = room.as_object_mut() else {
+                    continue;
+                };
+
+                for key in [
+                    "timeline",
+                    "state",
+                    "ephemeral",
+                    "account_data",
+                    "invite_state",
+                    "knock_state",
+                ] {
+                    ensure_events_container(room_obj.get_mut(key));
+                }
+            }
+        }
+    }
+}
+
+fn ensure_events_container(target: Option<&mut Value>) {
+    let Some(value) = target else {
+        return;
+    };
+    let Some(obj) = value.as_object_mut() else {
+        return;
+    };
+    if !obj.contains_key("events") {
+        obj.insert("events".to_string(), Value::Array(Vec::new()));
+    }
 }
 
 fn http_parse_event(event_val: &Value, self_user_id: &str) -> Option<IngestEvent> {
@@ -931,7 +1212,8 @@ async fn try_sdk_ingest(cfg: &ProbeConfig) -> Result<String> {
     let mut response = None;
 
     for (source, token) in sync_attempts {
-        let mut settings = SyncSettings::default().timeout(Duration::from_secs(cfg.timeout_seconds));
+        let mut settings =
+            SyncSettings::default().timeout(Duration::from_secs(cfg.timeout_seconds));
         if let Some(token) = token {
             settings = settings.token(token);
         }
@@ -952,9 +1234,16 @@ async fn try_sdk_ingest(cfg: &ProbeConfig) -> Result<String> {
     let response = match response {
         Some(sync_response) => sync_response,
         None => {
+            let error_text = last_sync_error.expect("sync attempt loop must record an error");
+            if is_malformed_sync_shape_error(&error_text) {
+                eprintln!(
+                    "matrix sdk ingest falling back to normalized HTTP sync because sync payload shape was malformed"
+                );
+                return ingest_via_http(cfg).await;
+            }
             return Err(anyhow::anyhow!(
                 "matrix rust sync_once failed in ingest_live_history mode after retries: {}",
-                last_sync_error.expect("sync attempt loop must record an error")
+                error_text
             ));
         }
     };
@@ -1084,6 +1373,10 @@ async fn try_sdk_ingest(cfg: &ProbeConfig) -> Result<String> {
         "matrix SDK ingest complete: rooms={} events={} latest_seen={}",
         total_rooms, total_events, latest_seen
     ))
+}
+
+fn is_malformed_sync_shape_error(error_text: &str) -> bool {
+    error_text.contains("missing field `events`") || error_text.contains("missing field 'events'")
 }
 
 fn build_sync_attempts(
