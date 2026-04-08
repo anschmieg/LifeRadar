@@ -31,6 +31,7 @@ while true; do
   fi
 
   run_step "msgraph-sync" /opt/life-radar/bin/graph-sync-mail.mjs || true
+  run_step "google-calendar-ingest" /opt/life-radar/bin/google-calendar-ingest.mjs || true
   run_step "derive-needs-state" /opt/life-radar/bin/derive-needs-state.sh || true
   run_step "extract-memory" /opt/life-radar/bin/extract-memory.mjs || true
   run_step "google-calendar-reconcile" /opt/life-radar/bin/google-calendar-reconcile.mjs || true

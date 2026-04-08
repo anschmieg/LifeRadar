@@ -83,9 +83,11 @@ function fetchActions() {
       where (
         status in ('proposed', 'scheduled', 'ready')
         and scheduled_start is not null
+        and coalesce(source_entity_type, '') <> 'calendar'
         and (calendar_provider is null or calendar_provider = 'google-calendar')
       ) or (
         status = 'cancelled'
+        and coalesce(source_entity_type, '') <> 'calendar'
         and calendar_provider = 'google-calendar'
         and calendar_external_id is not null
       )

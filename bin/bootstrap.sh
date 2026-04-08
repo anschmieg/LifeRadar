@@ -51,6 +51,7 @@ psql \
 /opt/life-radar/bin/backfill-matrix-history.sh || true
 /opt/life-radar/bin/prune-matrix-noise-events.sh || true
 /opt/life-radar/bin/graph-sync-mail.mjs || true
+/opt/life-radar/bin/google-calendar-ingest.mjs || true
 /opt/life-radar/bin/derive-needs-state.sh || true
 /opt/life-radar/bin/extract-memory.mjs || true
 /opt/life-radar/bin/google-calendar-reconcile.mjs || true
