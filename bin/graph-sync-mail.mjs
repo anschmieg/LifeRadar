@@ -102,7 +102,7 @@ function isTransientTokenError(error) {
 
 async function acquireToken() {
   const existing = getRuntimeMetadata(authKey) ?? {};
-  const refreshToken = existing.refresh_token || envRefreshToken;
+  const refreshToken = envRefreshToken || existing.refresh_token;
   if (fixtureDir) return loadFixture('token.json');
   const tokenRequest = {
     client_id: clientId,

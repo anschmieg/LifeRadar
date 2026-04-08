@@ -6,8 +6,8 @@ set -euo pipefail
 : "${LIFE_RADAR_DB_NAME:=life_radar}"
 : "${LIFE_RADAR_DB_USER:=life_radar}"
 : "${LIFE_RADAR_DB_PASSWORD:=change-me-in-env}"
-: "${MATRIX_MESSAGES_DB:=/home/node/.openclaw/workspace/workspace_data/messages.db}"
-: "${MATRIX_SESSION_PATH:=/home/node/.openclaw/identity/matrix-session.json}"
+: "${MATRIX_MESSAGES_DB:=/app/workspace/workspace_data/messages.db}"
+: "${MATRIX_SESSION_PATH:=/app/identity/matrix-session.json}"
 : "${LIFE_RADAR_BACKFILL_SOURCE:=matrix_history_backfill}"
 : "${LIFE_RADAR_BACKFILL_FORCE:=0}"
 

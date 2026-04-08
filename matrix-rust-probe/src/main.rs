@@ -70,27 +70,27 @@ impl ProbeConfig {
             candidate_type: env_var("LIFE_RADAR_MATRIX_RUST_CANDIDATE_TYPE", "matrix-native"),
             session_path: PathBuf::from(env_var(
                 "MATRIX_RUST_SESSION_PATH",
-                "/home/node/.openclaw/identity/matrix-session.json",
+                "/app/identity/matrix-session.json",
             )),
             store_path: PathBuf::from(env_var(
                 "MATRIX_RUST_STORE",
-                "/home/node/.openclaw/identity/matrix-rust-sdk-store",
+                "/app/identity/matrix-rust-sdk-store",
             )),
             key_export_path: PathBuf::from(env_var(
                 "MATRIX_E2EE_EXPORT_PATH",
-                "/home/node/.openclaw/identity/beeper-e2e-keys.txt",
+                "/app/identity/beeper-e2e-keys.txt",
             )),
             key_passphrase_path: PathBuf::from(env_var(
                 "MATRIX_E2EE_EXPORT_PASSPHRASE_PATH",
-                "/home/node/.openclaw/identity/.e2ee-export-passphrase",
+                "/app/identity/.e2ee-export-passphrase",
             )),
             key_import_marker_path: PathBuf::from(env_var(
                 "MATRIX_RUST_KEY_IMPORT_MARKER",
-                "/home/node/.openclaw/identity/matrix-rust-sdk-store/room-key-import-marker.json",
+                "/app/identity/matrix-rust-sdk-store/room-key-import-marker.json",
             )),
             report_dir: PathBuf::from(env_var(
                 "LIFE_RADAR_REPORT_DIR",
-                "/home/node/.openclaw/workspace/life-radar/reports",
+                "/app/workspace/life-radar/reports",
             )),
             timeout_seconds: env_var("LIFE_RADAR_MATRIX_RUST_TIMEOUT_SEC", "20")
                 .parse()

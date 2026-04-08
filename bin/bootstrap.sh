@@ -9,6 +9,17 @@ set -euo pipefail
 
 export PGPASSWORD="$LIFE_RADAR_DB_PASSWORD"
 SCHEMA_PATH="/opt/life-radar/schema.sql"
+IDENTITY_DIR="/app/identity"
+WORKSPACE_DIR="/app/workspace"
+LEGACY_OPENCLAW_ROOT="/home/node/.openclaw"
+
+# The worker persists state on /app volumes, but parts of the Matrix toolchain
+# still reference the historical OpenClaw paths. Recreate that layout so both
+# legacy env values and the new canonical /app paths resolve to the same files.
+mkdir -p "$IDENTITY_DIR" "$WORKSPACE_DIR/workspace_data" "$WORKSPACE_DIR/life-radar/reports"
+mkdir -p "$LEGACY_OPENCLAW_ROOT"
+ln -sfn "$IDENTITY_DIR" "$LEGACY_OPENCLAW_ROOT/identity"
+ln -sfn "$WORKSPACE_DIR" "$LEGACY_OPENCLAW_ROOT/workspace"
 
 # Workaround: if LIFE_RADAR_DB_HOST is the short name "life-radar-db",
 # try to resolve the full container name. Docker's embedded DNS sometimes

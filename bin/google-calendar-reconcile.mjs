@@ -43,7 +43,7 @@ function eventForAction(action) {
 
 async function acquireToken() {
   const existing = getRuntimeMetadata(authKey) ?? {};
-  const refreshToken = existing.refresh_token || envRefreshToken;
+  const refreshToken = envRefreshToken || existing.refresh_token;
   const token = await postFormJson('https://oauth2.googleapis.com/token', {
     client_id: clientId,
     client_secret: clientSecret,
