@@ -55,6 +55,8 @@ struct ProbeConfig {
     inspect_room_id: Option<String>,
     recent_room_limit: usize,
     recent_message_limit: u32,
+    undecrypted_heal_room_limit: usize,
+    undecrypted_heal_cooldown_hours: u64,
 }
 
 impl ProbeConfig {
@@ -104,6 +106,18 @@ impl ProbeConfig {
             recent_message_limit: env_var("LIFE_RADAR_MATRIX_RUST_RECENT_MESSAGE_LIMIT", "10")
                 .parse()
                 .context("invalid LIFE_RADAR_MATRIX_RUST_RECENT_MESSAGE_LIMIT")?,
+            undecrypted_heal_room_limit: env_var(
+                "LIFE_RADAR_MATRIX_RUST_UNDECRYPTED_HEAL_ROOM_LIMIT",
+                "3",
+            )
+            .parse()
+            .context("invalid LIFE_RADAR_MATRIX_RUST_UNDECRYPTED_HEAL_ROOM_LIMIT")?,
+            undecrypted_heal_cooldown_hours: env_var(
+                "LIFE_RADAR_MATRIX_RUST_UNDECRYPTED_HEAL_COOLDOWN_HOURS",
+                "24",
+            )
+            .parse()
+            .context("invalid LIFE_RADAR_MATRIX_RUST_UNDECRYPTED_HEAL_COOLDOWN_HOURS")?,
         })
     }
 }
@@ -190,6 +204,12 @@ struct PersistedRoomState {
     last_event_ts_ms: Option<u64>,
     backfill_complete: bool,
     metadata: Value,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct UndecryptedStats {
+    count: i64,
+    latest_event_ts_ms: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1238,8 +1258,10 @@ async fn try_sdk_ingest(cfg: &ProbeConfig) -> Result<String> {
             eprintln!(
                 "SDK ingest failed ({error_text}), using normalized HTTP sync bootstrap but keeping SDK room history ingest"
             );
-            let bootstrap_attempts =
-                build_sync_attempts(load_sync_checkpoint(&db).await?, session_file.next_batch.clone());
+            let bootstrap_attempts = build_sync_attempts(
+                load_sync_checkpoint(&db).await?,
+                session_file.next_batch.clone(),
+            );
             for (source, token) in bootstrap_attempts {
                 match fetch_normalized_sync_next_batch(cfg, &session_file, token.as_deref()).await {
                     Ok(next_batch) => {
@@ -1288,15 +1310,26 @@ async fn try_sdk_ingest(cfg: &ProbeConfig) -> Result<String> {
     let mut latest_seen = String::new();
     let self_user_id = client.user_id();
     let self_user_id_str = self_user_id.as_deref().map(|id| id.as_str());
-    let should_refresh_undecrypted = import_outcome.status == "imported";
+    let mut healed_undecrypted_rooms = 0_usize;
 
     for room in client.joined_rooms() {
         let room_id = room.room_id().to_string();
         let room_name = resolve_room_name(&room, self_user_id).await;
         let room_state = fetch_persisted_room_state(&db, &room_id).await?;
         let participants_json = room_participants_json(&room, self_user_id).await;
-        let should_reprocess_room = should_refresh_undecrypted
-            && room_has_undecrypted_events(&db, &room_id).await.unwrap_or(false);
+        let undecrypted_stats = room_undecrypted_stats(&db, &room_id)
+            .await
+            .unwrap_or_default();
+        let should_reprocess_room = room_should_heal_undecrypted(
+            cfg,
+            &import_outcome,
+            &room_state,
+            undecrypted_stats,
+            healed_undecrypted_rooms,
+        );
+        if should_reprocess_room {
+            healed_undecrypted_rooms += 1;
+        }
 
         let room_events = fetch_room_history(
             &room,
@@ -1344,6 +1377,8 @@ async fn try_sdk_ingest(cfg: &ProbeConfig) -> Result<String> {
             &latest_event_at,
             "matrix-sdk-native",
             true,
+            should_reprocess_room,
+            undecrypted_stats.count,
         )?;
 
         db.query_one(
@@ -1827,23 +1862,78 @@ async fn fetch_persisted_room_state(db: &PgClient, room_id: &str) -> Result<Pers
     })
 }
 
-async fn room_has_undecrypted_events(db: &PgClient, room_id: &str) -> Result<bool> {
+async fn room_undecrypted_stats(db: &PgClient, room_id: &str) -> Result<UndecryptedStats> {
     let row = db
         .query_one(
-            "select exists(
-                select 1
-                from life_radar.message_events me
-                join life_radar.conversations c on c.id = me.conversation_id
-                where c.source = 'matrix'
-                  and c.external_id = $1
-                  and me.content_text = '[undecrypted]'
-            )",
+            "select
+                count(*)::bigint as undecrypted_count,
+                max((extract(epoch from me.occurred_at) * 1000)::bigint) as latest_undecrypted_ts_ms
+             from life_radar.message_events me
+             join life_radar.conversations c on c.id = me.conversation_id
+             where c.source = 'matrix'
+               and c.external_id = $1
+               and me.content_text = '[undecrypted]'",
             &[&room_id],
         )
         .await
         .with_context(|| format!("failed to check undecrypted events for room {room_id}"))?;
 
-    Ok(row.get::<usize, bool>(0))
+    Ok(UndecryptedStats {
+        count: row.get::<usize, i64>(0),
+        latest_event_ts_ms: row
+            .get::<usize, Option<i64>>(1)
+            .map(|value| value.max(0) as u64),
+    })
+}
+
+fn room_should_heal_undecrypted(
+    cfg: &ProbeConfig,
+    import_outcome: &ImportOutcome,
+    room_state: &PersistedRoomState,
+    stats: UndecryptedStats,
+    healed_rooms_this_run: usize,
+) -> bool {
+    if stats.count <= 0 {
+        return false;
+    }
+
+    if import_outcome.status == "imported" {
+        return true;
+    }
+
+    if healed_rooms_this_run >= cfg.undecrypted_heal_room_limit {
+        return false;
+    }
+
+    let Some(heal_meta) = room_state
+        .metadata
+        .get("undecrypted_heal")
+        .and_then(Value::as_object)
+    else {
+        return true;
+    };
+
+    let last_attempt_ms = heal_meta
+        .get("attempted_at")
+        .and_then(Value::as_str)
+        .map(iso_to_unix_ms)
+        .unwrap_or_default();
+    if last_attempt_ms == 0 {
+        return true;
+    }
+
+    let cooldown_ms = cfg
+        .undecrypted_heal_cooldown_hours
+        .saturating_mul(60)
+        .saturating_mul(60)
+        .saturating_mul(1000);
+    let due_by_time = now_unix_ms().saturating_sub(last_attempt_ms) >= cooldown_ms;
+    let newer_undecrypted_exists = stats
+        .latest_event_ts_ms
+        .map(|latest| latest > last_attempt_ms)
+        .unwrap_or(false);
+
+    due_by_time || newer_undecrypted_exists
 }
 
 fn matrix_room_metadata(
@@ -1854,6 +1944,8 @@ fn matrix_room_metadata(
     latest_event_at: &str,
     runtime: &str,
     backfill_complete: bool,
+    undecrypted_heal_attempted: bool,
+    undecrypted_count_before: i64,
 ) -> Result<String> {
     let mut metadata = serde_json::from_str::<Value>(base_metadata_json)
         .unwrap_or(Value::Object(Default::default()));
@@ -1888,6 +1980,17 @@ fn matrix_room_metadata(
             "updated_at": iso_now(),
         }),
     );
+
+    if undecrypted_heal_attempted {
+        metadata_obj.insert(
+            "undecrypted_heal".to_string(),
+            serde_json::json!({
+                "attempted_at": iso_now(),
+                "undecrypted_count_before": undecrypted_count_before,
+                "runtime": runtime,
+            }),
+        );
+    }
 
     Ok(metadata.to_string())
 }
@@ -1938,9 +2041,7 @@ async fn maybe_import_room_keys(cfg: &ProbeConfig, client: &Client) -> Result<Im
         }
     }
 
-    let passphrase = fs::read_to_string(&cfg.key_passphrase_path)
-        .with_context(|| format!("failed to read {}", cfg.key_passphrase_path.display()))?;
-    let passphrase = passphrase.trim().to_owned();
+    let passphrase = read_key_passphrase(&cfg.key_passphrase_path)?;
     if passphrase.is_empty() {
         return Ok(ImportOutcome {
             status: "missing",
@@ -2219,6 +2320,13 @@ fn format_report_list(label: &str, values: &[String]) -> String {
     }
 }
 
+fn read_key_passphrase(path: &PathBuf) -> Result<String> {
+    Ok(fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?
+        .trim()
+        .to_owned())
+}
+
 fn env_var(key: &str, default: &str) -> String {
     env::var(key).unwrap_or_else(|_| default.to_string())
 }
@@ -2284,7 +2392,20 @@ fn modified_epoch_secs(metadata: &fs::Metadata) -> Result<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::build_sync_attempts;
+    use super::{build_sync_attempts, read_key_passphrase};
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn temp_path(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("life-radar-{name}-{unique}.txt"))
+    }
 
     #[test]
     fn sync_attempts_include_all_fallbacks_in_order() {
@@ -2324,5 +2445,16 @@ mod tests {
         let attempts = build_sync_attempts(None, None);
 
         assert_eq!(attempts, vec![("full_sync", None)]);
+    }
+
+    #[test]
+    fn passphrase_reader_trims_trailing_whitespace() {
+        let path = temp_path("passphrase");
+        fs::write(&path, "secret-passphrase\n").unwrap();
+
+        let value = read_key_passphrase(&path).unwrap();
+        assert_eq!(value, "secret-passphrase");
+
+        let _ = fs::remove_file(path);
     }
 }
