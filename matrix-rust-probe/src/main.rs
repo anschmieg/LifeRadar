@@ -956,7 +956,7 @@ async fn try_sdk_ingest(cfg: &ProbeConfig) -> Result<String> {
             }
             Err(err) => {
                 eprintln!("matrix sync_once attempt {source} failed: {err:#}");
-                last_sync_error = Some(err);
+                last_sync_error = Some(format!("{err:#}"));
             }
         }
     }
@@ -964,9 +964,10 @@ async fn try_sdk_ingest(cfg: &ProbeConfig) -> Result<String> {
     let response = match response {
         Some(sync_response) => sync_response,
         None => {
-            return Err(last_sync_error
-                .expect("sync attempt loop must record an error")
-                .context("matrix rust sync_once failed in ingest_live_history mode after retries"));
+            return Err(anyhow::anyhow!(
+                "matrix rust sync_once failed in ingest_live_history mode after retries: {}",
+                last_sync_error.expect("sync attempt loop must record an error")
+            ));
         }
     };
 
