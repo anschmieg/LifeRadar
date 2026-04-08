@@ -18,6 +18,7 @@ const envRefreshToken = env('MSGRAPH_REFRESH_TOKEN');
 const metadataKey = 'msgraph_mail_sync';
 const authKey = 'msgraph_auth';
 const fixtureDir = env('LIFE_RADAR_MSGRAPH_FIXTURE_DIR');
+const tokenRetryDelaysMs = [1000, 2000, 4000];
 
 if (!fixtureDir && (!clientId || !tenantId || !envRefreshToken)) {
   console.log('life-radar msgraph sync skipped: credentials not configured');
@@ -83,6 +84,22 @@ async function loadFixture(name) {
   return JSON.parse(await readFile(`${fixtureDir}/${name}`, 'utf8'));
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientTokenError(error) {
+  const message = String(error?.message ?? '');
+  return (
+    message.includes('login.microsoftonline.com') &&
+    (
+      message.includes('HTTP 503') ||
+      message.includes('"error":"server_error"') ||
+      message.includes('AADSTS40008')
+    )
+  );
+}
+
 async function acquireToken() {
   const existing = getRuntimeMetadata(authKey) ?? {};
   const refreshToken = existing.refresh_token || envRefreshToken;
@@ -94,7 +111,23 @@ async function acquireToken() {
     scope: 'offline_access https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/User.Read',
   };
   if (clientSecret) tokenRequest.client_secret = clientSecret;
-  const token = await postFormJson(`https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`, tokenRequest);
+  let token;
+  let lastError;
+  for (let attempt = 0; attempt <= tokenRetryDelaysMs.length; attempt += 1) {
+    try {
+      token = await postFormJson(`https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`, tokenRequest);
+      break;
+    } catch (error) {
+      lastError = error;
+      if (!isTransientTokenError(error) || attempt === tokenRetryDelaysMs.length) {
+        throw error;
+      }
+      const delayMs = tokenRetryDelaysMs[attempt];
+      console.warn(`life-radar msgraph token refresh transient failure; retrying in ${delayMs}ms`);
+      await sleep(delayMs);
+    }
+  }
+  if (!token) throw lastError;
   setRuntimeMetadata(authKey, {
     provider: 'microsoft-graph',
     updated_at: nowIso(),
