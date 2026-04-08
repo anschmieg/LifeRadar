@@ -14,6 +14,8 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import FastAPI, Query, HTTPException, Request, status
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.openapi.utils import get_openapi
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, JSONResponse
 from starlette.requests import Request as StarletteRequest
@@ -52,6 +54,9 @@ app = FastAPI(
     description="Personal intelligence and communications triage API",
     version="1.0.0",
     lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
 app.add_middleware(
@@ -207,6 +212,28 @@ async def health():
         return HealthResponse(status="ok", database="connected")
     except Exception as e:
         return HealthResponse(status="degraded", database=f"error: {e}")
+
+
+@app.get("/openapi.json")
+async def openapi_schema(request: Request):
+    require_api_key(request)
+    return JSONResponse(
+        get_openapi(
+            title=app.title,
+            version=app.version,
+            description=app.description,
+            routes=app.routes,
+        )
+    )
+
+
+@app.get("/docs")
+async def swagger_ui(request: Request):
+    require_api_key(request)
+    return get_swagger_ui_html(
+        openapi_url="/openapi.json",
+        title=f"{app.title} - Swagger UI",
+    )
 
 
 # --- /alerts ---

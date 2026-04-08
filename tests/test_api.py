@@ -66,6 +66,8 @@ class LifeRadarApiTests(unittest.TestCase):
             "/probe-status",
             "/probe-status/candidates",
             "/search?q=matrix",
+            "/docs",
+            "/openapi.json",
         ]
 
         for endpoint in endpoints:
@@ -73,6 +75,15 @@ class LifeRadarApiTests(unittest.TestCase):
                 response = self.client.get(endpoint)
                 self.assertEqual(response.status_code, 401)
                 self.assertEqual(response.json()["detail"], "Missing or invalid API key")
+
+    def test_docs_and_openapi_work_with_api_key(self):
+        docs_response = self.client.get("/docs", headers=self.auth_headers())
+        schema_response = self.client.get("/openapi.json", headers=self.auth_headers())
+
+        self.assertEqual(docs_response.status_code, 200)
+        self.assertIn("Swagger UI", docs_response.text)
+        self.assertEqual(schema_response.status_code, 200)
+        self.assertEqual(schema_response.json()["info"]["title"], "LifeRadar API")
 
     def test_send_message_uses_matrix_binary_for_matrix_conversations(self):
         with patch(
