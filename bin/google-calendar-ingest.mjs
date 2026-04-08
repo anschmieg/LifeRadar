@@ -139,7 +139,7 @@ for (const calendar of calendars) {
         metadata
       ) values (
         'calendar',
-        ${sqlLiteral(calendar.id)},
+        null,
         ${sqlLiteral(event.summary || '(Untitled event)')},
         ${sqlLiteral(event.description || null)},
         ${sqlLiteral(eventStatus(event))},
@@ -152,7 +152,7 @@ for (const calendar of calendars) {
       on conflict (calendar_external_id) do update
       set
         source_entity_type = 'calendar',
-        source_entity_id = excluded.source_entity_id,
+        source_entity_id = null,
         title = excluded.title,
         summary = excluded.summary,
         status = excluded.status,
