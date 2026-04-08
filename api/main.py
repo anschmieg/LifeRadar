@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, JSONResponse
 from starlette.requests import Request as StarletteRequest
 from pydantic import BaseModel, ValidationError
+from pydantic_core import PydanticUndefined
 
 from api.db import get_pool, close_pool
 from api.models import (
@@ -83,8 +84,11 @@ def _record_to_model(model_cls, record):
     for key, value in dict(record).items():
         normalized = _normalize_db_value(value)
         field = model_cls.model_fields.get(key)
-        if normalized is None and field is not None and field.default_factory is not None:
-            normalized = field.default_factory()
+        if normalized is None and field is not None:
+            if field.default_factory is not None:
+                normalized = field.default_factory()
+            elif field.default is not PydanticUndefined:
+                normalized = field.default
         payload[key] = normalized
     return model_cls(**payload)
 

@@ -137,7 +137,7 @@ class LifeRadarApiTests(unittest.TestCase):
             "account_id": None,
             "title": "Inbox thread",
             "participants": None,
-            "state": "active",
+            "state": None,
             "needs_read": False,
             "needs_reply": True,
             "important_now": False,
@@ -155,8 +155,8 @@ class LifeRadarApiTests(unittest.TestCase):
             "effort_estimate_minutes": None,
             "due_at": None,
             "metadata": None,
-            "created_at": "2026-04-08T10:00:00Z",
-            "updated_at": "2026-04-08T10:00:00Z",
+            "created_at": None,
+            "updated_at": None,
         }])
         pool = FakePool(connection)
 
@@ -167,6 +167,9 @@ class LifeRadarApiTests(unittest.TestCase):
         self.assertEqual(len(response.json()), 1)
         self.assertEqual(response.json()[0]["participants"], [])
         self.assertEqual(response.json()[0]["metadata"], {})
+        self.assertEqual(response.json()[0]["state"], "active")
+        self.assertIsNone(response.json()[0]["created_at"])
+        self.assertIsNone(response.json()[0]["updated_at"])
 
     def test_get_messages_coerces_null_json_fields(self):
         connection = AsyncMock()
@@ -187,8 +190,8 @@ class LifeRadarApiTests(unittest.TestCase):
             "importance_score": None,
             "triage_summary": None,
             "provenance": None,
-            "created_at": "2026-04-08T10:00:00Z",
-            "updated_at": "2026-04-08T10:00:00Z",
+            "created_at": None,
+            "updated_at": None,
         }])
         pool = FakePool(connection)
 
@@ -199,6 +202,8 @@ class LifeRadarApiTests(unittest.TestCase):
         self.assertEqual(len(response.json()), 1)
         self.assertEqual(response.json()[0]["content_json"], {})
         self.assertEqual(response.json()[0]["provenance"], {})
+        self.assertIsNone(response.json()[0]["created_at"])
+        self.assertIsNone(response.json()[0]["updated_at"])
 
     def test_get_probe_status_coerces_null_metadata(self):
         connection = AsyncMock()
