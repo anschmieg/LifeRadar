@@ -296,7 +296,34 @@ async def get_conversations(
 
         where = " AND ".join(conditions)
         query = f"""
-            SELECT * FROM life_radar.conversations
+            SELECT
+                id,
+                source,
+                external_id,
+                account_id,
+                title,
+                COALESCE(participants, '[]'::jsonb) AS participants,
+                COALESCE(state, 'active') AS state,
+                COALESCE(needs_read, FALSE) AS needs_read,
+                COALESCE(needs_reply, FALSE) AS needs_reply,
+                COALESCE(important_now, FALSE) AS important_now,
+                COALESCE(waiting_on_other, FALSE) AS waiting_on_other,
+                COALESCE(follow_up_later, FALSE) AS follow_up_later,
+                COALESCE(ready_to_act, FALSE) AS ready_to_act,
+                COALESCE(blocked_needs_context, FALSE) AS blocked_needs_context,
+                last_event_at,
+                last_triaged_at,
+                priority_score::double precision AS priority_score,
+                urgency_score::double precision AS urgency_score,
+                social_weight::double precision AS social_weight,
+                reward_value::double precision AS reward_value,
+                energy_fit::double precision AS energy_fit,
+                effort_estimate_minutes,
+                due_at,
+                COALESCE(metadata, '{{}}'::jsonb) AS metadata,
+                created_at,
+                updated_at
+            FROM life_radar.conversations
             WHERE {where}
             ORDER BY priority_score DESC NULLS LAST, last_event_at DESC
             LIMIT ${idx} OFFSET ${idx + 1}
@@ -344,7 +371,26 @@ async def get_messages(
 
         where = f" AND ".join(conditions) if conditions else "1=1"
         query = f"""
-            SELECT * FROM life_radar.message_events
+            SELECT
+                id,
+                conversation_id,
+                source,
+                external_id,
+                sender_id,
+                sender_label,
+                occurred_at,
+                content_text,
+                COALESCE(content_json, '{{}}'::jsonb) AS content_json,
+                COALESCE(is_inbound, TRUE) AS is_inbound,
+                reply_needed,
+                needs_read,
+                needs_reply,
+                importance_score::double precision AS importance_score,
+                triage_summary,
+                COALESCE(provenance, '{{}}'::jsonb) AS provenance,
+                created_at,
+                updated_at
+            FROM life_radar.message_events
             WHERE {where}
             ORDER BY occurred_at DESC
             LIMIT ${idx} OFFSET ${idx + 1}
@@ -609,7 +655,21 @@ async def get_probe_status():
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT * FROM life_radar.runtime_probes
+            """SELECT
+                   id,
+                   candidate_id,
+                   candidate_type,
+                   COALESCE(status, 'ok') AS status,
+                   observed_at,
+                   latency_ms,
+                   freshness_seconds,
+                   total_events,
+                   decrypt_failures,
+                   encrypted_non_text,
+                   running_processes,
+                   COALESCE(metadata, '{}'::jsonb) AS metadata,
+                   notes
+               FROM life_radar.runtime_probes
                ORDER BY observed_at DESC
                LIMIT 20"""
         )
@@ -621,7 +681,21 @@ async def get_probe_candidates():
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT * FROM life_radar.messaging_candidates ORDER BY last_probe_at DESC"
+            """SELECT
+                   candidate_id,
+                   candidate_type,
+                   COALESCE(last_status, 'ok') AS last_status,
+                   last_probe_at,
+                   latest_freshness_seconds,
+                   latest_total_events,
+                   latest_decrypt_failures,
+                   latest_encrypted_non_text,
+                   latest_running_processes,
+                   latest_notes,
+                   COALESCE(metadata, '{}'::jsonb) AS metadata,
+                   updated_at
+               FROM life_radar.messaging_candidates
+               ORDER BY last_probe_at DESC"""
         )
         return _records_to_models(MessagingCandidate, rows)
 
