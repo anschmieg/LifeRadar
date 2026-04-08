@@ -231,6 +231,74 @@ class LifeRadarApiTests(unittest.TestCase):
         self.assertEqual(len(response.json()), 1)
         self.assertEqual(response.json()[0]["metadata"], {})
 
+    def test_get_probe_status_coerces_stringified_metadata(self):
+        connection = AsyncMock()
+        connection.fetch = AsyncMock(return_value=[{
+            "id": uuid4(),
+            "candidate_id": "matrix-rust-sdk",
+            "candidate_type": "matrix-native",
+            "status": "ok",
+            "observed_at": "2026-04-08T10:00:00Z",
+            "latency_ms": 10,
+            "freshness_seconds": 5,
+            "total_events": 123,
+            "decrypt_failures": 0,
+            "encrypted_non_text": 0,
+            "running_processes": 1,
+            "metadata": '{"store_path":"/tmp/store"}',
+            "notes": None,
+        }])
+        pool = FakePool(connection)
+
+        with patch("api.main.get_pool", new=AsyncMock(return_value=pool)):
+            response = self.client.get("/probe-status")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()[0]["metadata"], {"store_path": "/tmp/store"})
+
+    def test_get_messages_coerces_stringified_json_fields(self):
+        connection = AsyncMock()
+        connection.fetch = AsyncMock(return_value=[{
+            "id": uuid4(),
+            "conversation_id": None,
+            "source": "matrix",
+            "external_id": "evt-2",
+            "sender_id": "@julia:example.com",
+            "sender_label": "Julia",
+            "occurred_at": "2026-04-08T10:00:00Z",
+            "content_text": "hi",
+            "content_json": '{"kind":"text"}',
+            "is_inbound": True,
+            "reply_needed": None,
+            "needs_read": None,
+            "needs_reply": None,
+            "importance_score": None,
+            "triage_summary": None,
+            "provenance": '{"source":"matrix-sdk"}',
+            "created_at": None,
+            "updated_at": None,
+        }])
+        pool = FakePool(connection)
+
+        with patch("api.main.get_pool", new=AsyncMock(return_value=pool)):
+            response = self.client.get("/messages?limit=1")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()[0]["content_json"], {"kind": "text"})
+        self.assertEqual(response.json()[0]["provenance"], {"source": "matrix-sdk"})
+
+    def test_get_conversations_uses_coalesced_state_filter(self):
+        connection = AsyncMock()
+        connection.fetch = AsyncMock(return_value=[])
+        pool = FakePool(connection)
+
+        with patch("api.main.get_pool", new=AsyncMock(return_value=pool)):
+            response = self.client.get("/conversations?limit=2")
+
+        self.assertEqual(response.status_code, 200)
+        query = connection.fetch.await_args.args[0]
+        self.assertIn("COALESCE(state, 'active')", query)
+
 
 if __name__ == "__main__":
     unittest.main()

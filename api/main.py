@@ -3,6 +3,7 @@ LifeRadar API Server — FastAPI
 """
 import os
 import logging
+import json
 import secrets
 import asyncpg
 import httpx
@@ -84,6 +85,12 @@ def _record_to_model(model_cls, record):
     for key, value in dict(record).items():
         normalized = _normalize_db_value(value)
         field = model_cls.model_fields.get(key)
+        annotation = getattr(field, "annotation", None) if field is not None else None
+        if isinstance(normalized, str) and annotation in (dict, list):
+            try:
+                normalized = json.loads(normalized)
+            except json.JSONDecodeError:
+                pass
         if normalized is None and field is not None:
             if field.default_factory is not None:
                 normalized = field.default_factory()
@@ -280,7 +287,7 @@ async def get_conversations(
 ):
     pool = await get_pool()
     async with pool.acquire() as conn:
-        conditions = ["state = $1 OR ($1 IS NULL AND state != 'archived')"]
+        conditions = ["COALESCE(state, 'active') = $1 OR ($1 IS NULL AND COALESCE(state, 'active') != 'archived')"]
         params = [state]
         idx = 2
 
