@@ -1196,7 +1196,7 @@ async fn http_fetch_room_history(
 
 async fn try_sdk_ingest(cfg: &ProbeConfig) -> Result<String> {
     let (client, session_file) = build_client(cfg).await?;
-    maybe_import_room_keys(cfg, &client).await?;
+    let import_outcome = maybe_import_room_keys(cfg, &client).await?;
 
     let db = connect_postgres(
         cfg,
@@ -1264,18 +1264,29 @@ async fn try_sdk_ingest(cfg: &ProbeConfig) -> Result<String> {
     let mut latest_seen = String::new();
     let self_user_id = client.user_id();
     let self_user_id_str = self_user_id.as_deref().map(|id| id.as_str());
+    let should_refresh_undecrypted = import_outcome.status == "imported";
 
     for room in client.joined_rooms() {
         let room_id = room.room_id().to_string();
         let room_name = resolve_room_name(&room, self_user_id).await;
         let room_state = fetch_persisted_room_state(&db, &room_id).await?;
         let participants_json = room_participants_json(&room, self_user_id).await;
+        let should_reprocess_room = should_refresh_undecrypted
+            && room_has_undecrypted_events(&db, &room_id).await.unwrap_or(false);
 
-        let room_events = fetch_room_history(&room, self_user_id_str, room_state.last_event_ts_ms)
-            .await
-            .unwrap_or_default();
+        let room_events = fetch_room_history(
+            &room,
+            self_user_id_str,
+            if should_reprocess_room {
+                None
+            } else {
+                room_state.last_event_ts_ms
+            },
+        )
+        .await
+        .unwrap_or_default();
 
-        if room_events.is_empty() && room_state.backfill_complete {
+        if room_events.is_empty() && room_state.backfill_complete && !should_reprocess_room {
             continue;
         }
 
@@ -1370,8 +1381,8 @@ async fn try_sdk_ingest(cfg: &ProbeConfig) -> Result<String> {
     .ok();
 
     Ok(format!(
-        "matrix SDK ingest complete: rooms={} events={} latest_seen={}",
-        total_rooms, total_events, latest_seen
+        "matrix SDK ingest complete: rooms={} events={} latest_seen={} room_key_import={}",
+        total_rooms, total_events, latest_seen, import_outcome.detail
     ))
 }
 
@@ -1765,6 +1776,25 @@ async fn fetch_persisted_room_state(db: &PgClient, room_id: &str) -> Result<Pers
         backfill_complete,
         metadata,
     })
+}
+
+async fn room_has_undecrypted_events(db: &PgClient, room_id: &str) -> Result<bool> {
+    let row = db
+        .query_one(
+            "select exists(
+                select 1
+                from life_radar.message_events me
+                join life_radar.conversations c on c.id = me.conversation_id
+                where c.source = 'matrix'
+                  and c.external_id = $1
+                  and me.content_text = '[undecrypted]'
+            )",
+            &[&room_id],
+        )
+        .await
+        .with_context(|| format!("failed to check undecrypted events for room {room_id}"))?;
+
+    Ok(row.get::<usize, bool>(0))
 }
 
 fn matrix_room_metadata(
