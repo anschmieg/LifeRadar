@@ -1,6 +1,7 @@
 import os
 import unittest
 from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
@@ -126,6 +127,104 @@ class LifeRadarApiTests(unittest.TestCase):
         self.assertEqual(first_limit, 2)
         self.assertEqual(second_limit, 2)
         self.assertEqual(third_limit, 2)
+
+    def test_get_conversations_coerces_null_json_fields(self):
+        connection = AsyncMock()
+        connection.fetch = AsyncMock(return_value=[{
+            "id": uuid4(),
+            "source": "outlook",
+            "external_id": "conv-1",
+            "account_id": None,
+            "title": "Inbox thread",
+            "participants": None,
+            "state": "active",
+            "needs_read": False,
+            "needs_reply": True,
+            "important_now": False,
+            "waiting_on_other": False,
+            "follow_up_later": False,
+            "ready_to_act": False,
+            "blocked_needs_context": False,
+            "last_event_at": None,
+            "last_triaged_at": None,
+            "priority_score": None,
+            "urgency_score": None,
+            "social_weight": None,
+            "reward_value": None,
+            "energy_fit": None,
+            "effort_estimate_minutes": None,
+            "due_at": None,
+            "metadata": None,
+            "created_at": "2026-04-08T10:00:00Z",
+            "updated_at": "2026-04-08T10:00:00Z",
+        }])
+        pool = FakePool(connection)
+
+        with patch("api.main.get_pool", new=AsyncMock(return_value=pool)):
+            response = self.client.get("/conversations?limit=1")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()), 1)
+        self.assertEqual(response.json()[0]["participants"], [])
+        self.assertEqual(response.json()[0]["metadata"], {})
+
+    def test_get_messages_coerces_null_json_fields(self):
+        connection = AsyncMock()
+        connection.fetch = AsyncMock(return_value=[{
+            "id": uuid4(),
+            "conversation_id": None,
+            "source": "matrix",
+            "external_id": "evt-1",
+            "sender_id": "@julia:example.com",
+            "sender_label": "Julia",
+            "occurred_at": "2026-04-08T10:00:00Z",
+            "content_text": "Nachdem was Sarah gesagt hat, bin ich eher wieder gegen Sau",
+            "content_json": None,
+            "is_inbound": True,
+            "reply_needed": None,
+            "needs_read": None,
+            "needs_reply": None,
+            "importance_score": None,
+            "triage_summary": None,
+            "provenance": None,
+            "created_at": "2026-04-08T10:00:00Z",
+            "updated_at": "2026-04-08T10:00:00Z",
+        }])
+        pool = FakePool(connection)
+
+        with patch("api.main.get_pool", new=AsyncMock(return_value=pool)):
+            response = self.client.get("/messages?limit=1&source=matrix")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()), 1)
+        self.assertEqual(response.json()[0]["content_json"], {})
+        self.assertEqual(response.json()[0]["provenance"], {})
+
+    def test_get_probe_status_coerces_null_metadata(self):
+        connection = AsyncMock()
+        connection.fetch = AsyncMock(return_value=[{
+            "id": uuid4(),
+            "candidate_id": "matrix-rust-sdk",
+            "candidate_type": "matrix-native",
+            "status": "ok",
+            "observed_at": "2026-04-08T10:00:00Z",
+            "latency_ms": 10,
+            "freshness_seconds": 5,
+            "total_events": 123,
+            "decrypt_failures": 0,
+            "encrypted_non_text": 0,
+            "running_processes": 1,
+            "metadata": None,
+            "notes": None,
+        }])
+        pool = FakePool(connection)
+
+        with patch("api.main.get_pool", new=AsyncMock(return_value=pool)):
+            response = self.client.get("/probe-status")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()), 1)
+        self.assertEqual(response.json()[0]["metadata"], {})
 
 
 if __name__ == "__main__":

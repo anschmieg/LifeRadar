@@ -79,7 +79,14 @@ def _normalize_db_value(value):
 
 
 def _record_to_model(model_cls, record):
-    return model_cls(**{key: _normalize_db_value(value) for key, value in dict(record).items()})
+    payload = {}
+    for key, value in dict(record).items():
+        normalized = _normalize_db_value(value)
+        field = model_cls.model_fields.get(key)
+        if normalized is None and field is not None and field.default_factory is not None:
+            normalized = field.default_factory()
+        payload[key] = normalized
+    return model_cls(**payload)
 
 
 def _records_to_models(model_cls, records):
