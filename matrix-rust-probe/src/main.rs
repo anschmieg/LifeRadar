@@ -924,16 +924,58 @@ async fn try_sdk_ingest(cfg: &ProbeConfig) -> Result<String> {
     .await?;
     let persisted_sync_token = load_sync_checkpoint(&db).await?;
 
-    let mut settings = SyncSettings::default().timeout(Duration::from_secs(cfg.timeout_seconds));
-    if let Some(token) = persisted_sync_token.or(session_file.next_batch.clone()) {
-        settings = settings.token(token);
+    let mut sync_attempts: Vec<(&str, Option<String>)> = Vec::new();
+    if let Some(token) = persisted_sync_token {
+        sync_attempts.push(("persisted_checkpoint", Some(token)));
     }
-    let response = client
-        .sync_once(settings)
-        .await
-        .context("matrix rust sync_once failed in ingest_live_history mode")?;
+    if let Some(token) = session_file.next_batch.clone() {
+        let duplicate = sync_attempts
+            .iter()
+            .any(|(_, existing)| existing.as_deref() == Some(token.as_str()));
+        if !duplicate {
+            sync_attempts.push(("session_file", Some(token)));
+        }
+    }
+    sync_attempts.push(("full_sync", None));
 
-    save_sync_checkpoint(&db, &response.next_batch, "matrix-sdk-native").await?;
+    let mut selected_sync_source = "full_sync";
+    let mut last_sync_error = None;
+    let mut response = None;
+
+    for (source, token) in sync_attempts {
+        let mut settings = SyncSettings::default().timeout(Duration::from_secs(cfg.timeout_seconds));
+        if let Some(token) = token {
+            settings = settings.token(token);
+        }
+
+        match client.sync_once(settings).await {
+            Ok(sync_response) => {
+                selected_sync_source = source;
+                response = Some(sync_response);
+                break;
+            }
+            Err(err) => {
+                eprintln!("matrix sync_once attempt {source} failed: {err:#}");
+                last_sync_error = Some(err);
+            }
+        }
+    }
+
+    let response = match response {
+        Some(sync_response) => sync_response,
+        None => {
+            return Err(last_sync_error
+                .expect("sync attempt loop must record an error")
+                .context("matrix rust sync_once failed in ingest_live_history mode after retries"));
+        }
+    };
+
+    save_sync_checkpoint(
+        &db,
+        &response.next_batch,
+        &format!("matrix-sdk-native:{selected_sync_source}"),
+    )
+    .await?;
 
     let upsert_conversation = prepare_upsert_conversation(&db).await?;
     let upsert_event = prepare_upsert_event(&db).await?;

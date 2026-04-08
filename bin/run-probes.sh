@@ -2,7 +2,7 @@
 set -euo pipefail
 
 : "${LIFE_RADAR_PROBE_INTERVAL_SEC:=300}"
-: "${LIFE_RADAR_MATRIX_RUST_RECOVER_HTTP_ON_FAILURE:=0}"
+: "${LIFE_RADAR_MATRIX_RUST_RECOVER_HTTP_ON_FAILURE:=1}"
 
 /opt/life-radar/bin/bootstrap.sh
 
