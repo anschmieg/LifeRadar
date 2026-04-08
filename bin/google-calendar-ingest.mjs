@@ -125,43 +125,59 @@ for (const calendar of calendars) {
       all_day: Boolean(event.start?.date && !event.start?.dateTime),
     };
 
-    runPsql(`
-      insert into life_radar.planned_actions (
-        source_entity_type,
-        source_entity_id,
-        title,
-        summary,
-        status,
-        scheduled_start,
-        scheduled_end,
-        calendar_provider,
-        calendar_external_id,
-        metadata
-      ) values (
-        'calendar',
-        null,
-        ${sqlLiteral(event.summary || '(Untitled event)')},
-        ${sqlLiteral(event.description || null)},
-        ${sqlLiteral(eventStatus(event))},
-        ${sqlLiteral(scheduledStart)}::timestamptz,
-        ${sqlLiteral(scheduledEnd)}::timestamptz,
-        'google-calendar',
-        ${sqlLiteral(externalId(calendar, event))},
-        ${sqlJson(metadata)}
-      )
-      on conflict (calendar_external_id) do update
-      set
-        source_entity_type = 'calendar',
-        source_entity_id = null,
-        title = excluded.title,
-        summary = excluded.summary,
-        status = excluded.status,
-        scheduled_start = excluded.scheduled_start,
-        scheduled_end = excluded.scheduled_end,
-        calendar_provider = excluded.calendar_provider,
-        metadata = coalesce(life_radar.planned_actions.metadata, '{}'::jsonb) || excluded.metadata,
-        updated_at = now();
-    `);
+    const existingId = runPsql(`
+      select id
+      from life_radar.planned_actions
+      where calendar_provider = 'google-calendar'
+        and calendar_external_id = ${sqlLiteral(externalId(calendar, event))}
+      order by updated_at desc
+      limit 1;
+    `, { tuplesOnly: true });
+
+    if (existingId) {
+      runPsql(`
+        update life_radar.planned_actions
+        set
+          source_entity_type = 'calendar',
+          source_entity_id = null,
+          title = ${sqlLiteral(event.summary || '(Untitled event)')},
+          summary = ${sqlLiteral(event.description || null)},
+          status = ${sqlLiteral(eventStatus(event))},
+          scheduled_start = ${sqlLiteral(scheduledStart)}::timestamptz,
+          scheduled_end = ${sqlLiteral(scheduledEnd)}::timestamptz,
+          calendar_provider = 'google-calendar',
+          calendar_external_id = ${sqlLiteral(externalId(calendar, event))},
+          metadata = coalesce(metadata, '{}'::jsonb) || ${sqlJson(metadata)},
+          updated_at = now()
+        where id = ${sqlLiteral(existingId)}::uuid;
+      `);
+    } else {
+      runPsql(`
+        insert into life_radar.planned_actions (
+          source_entity_type,
+          source_entity_id,
+          title,
+          summary,
+          status,
+          scheduled_start,
+          scheduled_end,
+          calendar_provider,
+          calendar_external_id,
+          metadata
+        ) values (
+          'calendar',
+          null,
+          ${sqlLiteral(event.summary || '(Untitled event)')},
+          ${sqlLiteral(event.description || null)},
+          ${sqlLiteral(eventStatus(event))},
+          ${sqlLiteral(scheduledStart)}::timestamptz,
+          ${sqlLiteral(scheduledEnd)}::timestamptz,
+          'google-calendar',
+          ${sqlLiteral(externalId(calendar, event))},
+          ${sqlJson(metadata)}
+        );
+      `);
+    }
     imported += 1;
   }
 }
