@@ -242,9 +242,28 @@ let messageCount = 0;
 let removedCount = 0;
 let latestAt = syncState.latest_occurred_at ?? null;
 let deltaLink = syncState.delta_link ?? null;
+let restartedFromInitialDelta = false;
 
 while (pageUrl) {
-  const page = await graphGet(pageUrl, accessToken);
+  let page;
+  try {
+    page = await graphGet(pageUrl, accessToken);
+  } catch (error) {
+    const message = String(error?.message ?? '');
+    const isUnauthorized = message.includes('HTTP 401');
+    const isDeltaCursorUrl = typeof pageUrl === 'string' && pageUrl.includes('$deltatoken=');
+    if (isUnauthorized && !restartedFromInitialDelta) {
+      console.warn('life-radar msgraph delta cursor rejected; retrying from initial inbox delta');
+      restartedFromInitialDelta = true;
+      pageUrl = initialDeltaUrl();
+      deltaLink = null;
+      continue;
+    }
+    if (isUnauthorized && isDeltaCursorUrl) {
+      console.warn('life-radar msgraph delta cursor still unauthorized after reset attempt');
+    }
+    throw error;
+  }
   pageCount += 1;
   for (const item of page.value ?? []) {
     if (item['@removed']) {
