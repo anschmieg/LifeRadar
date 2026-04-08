@@ -50,30 +50,17 @@ async def _get_json(url: str, params: dict | None = None) -> list[dict]:
         return _normalize_api_response(response.json())
 
 
-async def call_public_api(path: str, params: dict | None = None) -> list[dict]:
-    """Make a GET request to the public LifeRadar API when explicitly configured."""
-    if not LIFE_RADAR_PUBLIC_API_URL:
-        return [{"error": "Public LifeRadar API URL is not configured"}]
-    url = f"{LIFE_RADAR_PUBLIC_API_URL.rstrip('/')}/{path.lstrip('/')}"
-    try:
-        return await _get_json(url, params)
-    except httpx.HTTPStatusError as e:
-        return [{"error": f"HTTP {e.response.status_code}: {e.response.text[:200]}"}]
-    except httpx.ConnectError:
-        return [{"error": f"Could not connect to public LifeRadar API at {url}."}]
-    except Exception as e:
-        return [{"error": str(e)}]
-
-
 async def call_api(path: str, params: dict | None = None) -> list[dict]:
     """Make a GET request to the LifeRadar API and return parsed JSON."""
     path = path.lstrip("/")
-    primary_url = f"{LIFE_RADAR_API_URL.rstrip('/')}/{path}"
-    fallback_url = (
+    internal_url = f"{LIFE_RADAR_API_URL.rstrip('/')}/{path}"
+    public_url = (
         f"{LIFE_RADAR_PUBLIC_API_URL.rstrip('/')}/{path}"
         if LIFE_RADAR_PUBLIC_API_URL
         else ""
     )
+    primary_url = public_url or internal_url
+    fallback_url = internal_url if public_url else ""
     try:
         return await _get_json(primary_url, params)
     except httpx.HTTPStatusError as e:
@@ -311,11 +298,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         case "probe_candidates":
             result = await call_api("probe-status/candidates")
         case "search":
-            result = (
-                await call_public_api("search", params)
-                if LIFE_RADAR_PUBLIC_API_URL
-                else await call_api("search", params)
-            )
+            result = await call_api("search", params)
         case _:
             result = [{"error": f"Unknown tool: {name}"}]
 
