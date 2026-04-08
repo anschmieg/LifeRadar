@@ -1,6 +1,7 @@
 mod adapter;
 
 use std::{
+    collections::{HashMap, HashSet},
     env, fs,
     path::PathBuf,
     time::{Duration, Instant},
@@ -199,7 +200,7 @@ struct InspectRoomReport {
     room: Option<RecentRoom>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PersistedRoomState {
     last_event_ts_ms: Option<u64>,
     backfill_complete: bool,
@@ -1310,26 +1311,61 @@ async fn try_sdk_ingest(cfg: &ProbeConfig) -> Result<String> {
     let mut latest_seen = String::new();
     let self_user_id = client.user_id();
     let self_user_id_str = self_user_id.as_deref().map(|id| id.as_str());
-    let mut healed_undecrypted_rooms = 0_usize;
+    let joined_rooms = client.joined_rooms();
+    let mut room_states = HashMap::new();
+    let mut undecrypted_stats_by_room = HashMap::new();
+    let mut heal_candidates = Vec::new();
 
-    for room in client.joined_rooms() {
+    for room in &joined_rooms {
         let room_id = room.room_id().to_string();
-        let room_name = resolve_room_name(&room, self_user_id).await;
         let room_state = fetch_persisted_room_state(&db, &room_id).await?;
-        let participants_json = room_participants_json(&room, self_user_id).await;
         let undecrypted_stats = room_undecrypted_stats(&db, &room_id)
             .await
             .unwrap_or_default();
-        let should_reprocess_room = room_should_heal_undecrypted(
-            cfg,
-            &import_outcome,
-            &room_state,
-            undecrypted_stats,
-            healed_undecrypted_rooms,
-        );
-        if should_reprocess_room {
-            healed_undecrypted_rooms += 1;
+        if room_should_heal_undecrypted(cfg, &import_outcome, &room_state, undecrypted_stats) {
+            heal_candidates.push((room_id.clone(), undecrypted_stats));
         }
+        room_states.insert(room_id.clone(), room_state);
+        undecrypted_stats_by_room.insert(room_id, undecrypted_stats);
+    }
+
+    heal_candidates.sort_by(|left, right| {
+        right
+            .1
+            .latest_event_ts_ms
+            .cmp(&left.1.latest_event_ts_ms)
+            .then(right.1.count.cmp(&left.1.count))
+    });
+    let heal_room_ids: HashSet<String> = if import_outcome.status == "imported" {
+        heal_candidates
+            .into_iter()
+            .map(|(room_id, _)| room_id)
+            .collect()
+    } else {
+        heal_candidates
+            .into_iter()
+            .take(cfg.undecrypted_heal_room_limit)
+            .map(|(room_id, _)| room_id)
+            .collect()
+    };
+
+    for room in joined_rooms {
+        let room_id = room.room_id().to_string();
+        let room_name = resolve_room_name(&room, self_user_id).await;
+        let room_state = room_states
+            .get(&room_id)
+            .cloned()
+            .unwrap_or(PersistedRoomState {
+                last_event_ts_ms: None,
+                backfill_complete: false,
+                metadata: Value::Object(Default::default()),
+            });
+        let participants_json = room_participants_json(&room, self_user_id).await;
+        let undecrypted_stats = undecrypted_stats_by_room
+            .get(&room_id)
+            .copied()
+            .unwrap_or_default();
+        let should_reprocess_room = heal_room_ids.contains(&room_id);
 
         let room_events = fetch_room_history(
             &room,
@@ -1891,7 +1927,6 @@ fn room_should_heal_undecrypted(
     import_outcome: &ImportOutcome,
     room_state: &PersistedRoomState,
     stats: UndecryptedStats,
-    healed_rooms_this_run: usize,
 ) -> bool {
     if stats.count <= 0 {
         return false;
@@ -1899,10 +1934,6 @@ fn room_should_heal_undecrypted(
 
     if import_outcome.status == "imported" {
         return true;
-    }
-
-    if healed_rooms_this_run >= cfg.undecrypted_heal_room_limit {
-        return false;
     }
 
     let Some(heal_meta) = room_state
