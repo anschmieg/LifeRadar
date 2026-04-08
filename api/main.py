@@ -512,6 +512,7 @@ async def create_task(task: TaskCreate, request: Request):
 async def get_calendar_events(
     from_date: Optional[datetime] = None,
     to_date: Optional[datetime] = None,
+    days: Optional[int] = Query(None, ge=1, le=365),
     limit: int = Query(50, ge=1, le=200),
 ):
     """
@@ -522,15 +523,24 @@ async def get_calendar_events(
         conditions = ["calendar_external_id IS NOT NULL"]
         params = []
         idx = 1
+        effective_from = from_date
+        effective_to = to_date
 
-        if from_date:
-            conditions.append(f"scheduled_start >= ${idx}")
-            params.append(from_date)
+        if days is not None and effective_to is None:
+            if effective_from is None:
+                effective_from = datetime.now(timezone.utc)
+            effective_to = effective_from + timedelta(days=days)
+
+        if effective_from:
+            # Include events that are already in progress at the window start.
+            conditions.append(f"COALESCE(scheduled_end, scheduled_start) >= ${idx}")
+            params.append(effective_from)
             idx += 1
 
-        if to_date:
-            conditions.append(f"scheduled_end <= ${idx}")
-            params.append(to_date)
+        if effective_to:
+            # Include events that start before the window end, even if they span beyond it.
+            conditions.append(f"scheduled_start <= ${idx}")
+            params.append(effective_to)
             idx += 1
 
         where = " AND ".join(conditions)

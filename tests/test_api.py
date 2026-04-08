@@ -101,6 +101,23 @@ class LifeRadarApiTests(unittest.TestCase):
         self.assertIn("FROM life_radar.planned_actions", query)
         self.assertEqual(limit, 2)
 
+    def test_calendar_events_support_days_window_for_ongoing_events(self):
+        connection = AsyncMock()
+        connection.fetch = AsyncMock(return_value=[])
+        pool = FakePool(connection)
+
+        with patch("api.main.get_pool", new=AsyncMock(return_value=pool)):
+            response = self.client.get("/calendar/events?days=14&limit=5")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), [])
+        connection.fetch.assert_awaited_once()
+        query, from_date, to_date, limit = connection.fetch.await_args.args
+        self.assertIn("COALESCE(scheduled_end, scheduled_start) >= $1", query)
+        self.assertIn("scheduled_start <= $2", query)
+        self.assertEqual(limit, 5)
+        self.assertLess(from_date, to_date)
+
     def test_search_uses_expected_placeholder_arguments(self):
         connection = AsyncMock()
         connection.fetchval = AsyncMock(return_value=False)
