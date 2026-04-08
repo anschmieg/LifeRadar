@@ -1210,6 +1210,7 @@ async fn try_sdk_ingest(cfg: &ProbeConfig) -> Result<String> {
     let mut selected_sync_source = "full_sync";
     let mut last_sync_error = None;
     let mut response = None;
+    let mut next_batch_override: Option<String> = None;
 
     for (source, token) in sync_attempts {
         let mut settings =
@@ -1231,26 +1232,49 @@ async fn try_sdk_ingest(cfg: &ProbeConfig) -> Result<String> {
         }
     }
 
-    let response = match response {
-        Some(sync_response) => sync_response,
-        None => {
-            let error_text = last_sync_error.expect("sync attempt loop must record an error");
-            if is_malformed_sync_shape_error(&error_text) {
-                eprintln!(
-                    "matrix sdk ingest falling back to normalized HTTP sync because sync payload shape was malformed"
-                );
-                return ingest_via_http(cfg).await;
+    if response.is_none() {
+        let error_text = last_sync_error.expect("sync attempt loop must record an error");
+        if is_malformed_sync_shape_error(&error_text) {
+            eprintln!(
+                "SDK ingest failed ({error_text}), using normalized HTTP sync bootstrap but keeping SDK room history ingest"
+            );
+            let bootstrap_attempts =
+                build_sync_attempts(load_sync_checkpoint(&db).await?, session_file.next_batch.clone());
+            for (source, token) in bootstrap_attempts {
+                match fetch_normalized_sync_next_batch(cfg, &session_file, token.as_deref()).await {
+                    Ok(next_batch) => {
+                        selected_sync_source = source;
+                        next_batch_override = Some(next_batch);
+                        break;
+                    }
+                    Err(err) => {
+                        eprintln!("normalized HTTP sync bootstrap {source} failed: {err:#}");
+                    }
+                }
             }
+            if next_batch_override.is_none() {
+                return Err(anyhow::anyhow!(
+                    "matrix rust sync_once failed and normalized HTTP bootstrap could not recover: {}",
+                    error_text
+                ));
+            }
+        } else {
             return Err(anyhow::anyhow!(
                 "matrix rust sync_once failed in ingest_live_history mode after retries: {}",
                 error_text
             ));
         }
-    };
+    }
+
+    let next_batch_to_save = response
+        .as_ref()
+        .map(|sync_response| sync_response.next_batch.clone())
+        .or(next_batch_override)
+        .context("missing next_batch for matrix sync checkpoint")?;
 
     save_sync_checkpoint(
         &db,
-        &response.next_batch,
+        &next_batch_to_save,
         &format!("matrix-sdk-native:{selected_sync_source}"),
     )
     .await?;
@@ -1384,6 +1408,31 @@ async fn try_sdk_ingest(cfg: &ProbeConfig) -> Result<String> {
         "matrix SDK ingest complete: rooms={} events={} latest_seen={} room_key_import={}",
         total_rooms, total_events, latest_seen, import_outcome.detail
     ))
+}
+
+async fn fetch_normalized_sync_next_batch(
+    cfg: &ProbeConfig,
+    session_file: &SessionFile,
+    since: Option<&str>,
+) -> Result<String> {
+    let http_client = HttpClient::builder()
+        .user_agent("life-radar-matrix-probe/0.1.0")
+        .timeout(Duration::from_secs(cfg.timeout_seconds))
+        .build()
+        .context("failed to build HTTP client for normalized sync bootstrap")?;
+    let sync_body = http_fetch_sync_json(
+        &http_client,
+        &session_file.access_token,
+        &session_file.homeserver,
+        since,
+        cfg.timeout_seconds,
+    )
+    .await?;
+    sync_body
+        .get("next_batch")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .context("normalized sync bootstrap did not return next_batch")
 }
 
 fn is_malformed_sync_shape_error(error_text: &str) -> bool {
