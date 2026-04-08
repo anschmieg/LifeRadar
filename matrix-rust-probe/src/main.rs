@@ -924,19 +924,7 @@ async fn try_sdk_ingest(cfg: &ProbeConfig) -> Result<String> {
     .await?;
     let persisted_sync_token = load_sync_checkpoint(&db).await?;
 
-    let mut sync_attempts: Vec<(&str, Option<String>)> = Vec::new();
-    if let Some(token) = persisted_sync_token {
-        sync_attempts.push(("persisted_checkpoint", Some(token)));
-    }
-    if let Some(token) = session_file.next_batch.clone() {
-        let duplicate = sync_attempts
-            .iter()
-            .any(|(_, existing)| existing.as_deref() == Some(token.as_str()));
-        if !duplicate {
-            sync_attempts.push(("session_file", Some(token)));
-        }
-    }
-    sync_attempts.push(("full_sync", None));
+    let sync_attempts = build_sync_attempts(persisted_sync_token, session_file.next_batch.clone());
 
     let mut selected_sync_source = "full_sync";
     let mut last_sync_error = None;
@@ -1096,6 +1084,26 @@ async fn try_sdk_ingest(cfg: &ProbeConfig) -> Result<String> {
         "matrix SDK ingest complete: rooms={} events={} latest_seen={}",
         total_rooms, total_events, latest_seen
     ))
+}
+
+fn build_sync_attempts(
+    persisted_sync_token: Option<String>,
+    session_file_token: Option<String>,
+) -> Vec<(&'static str, Option<String>)> {
+    let mut sync_attempts: Vec<(&'static str, Option<String>)> = Vec::new();
+    if let Some(token) = persisted_sync_token {
+        sync_attempts.push(("persisted_checkpoint", Some(token)));
+    }
+    if let Some(token) = session_file_token {
+        let duplicate = sync_attempts
+            .iter()
+            .any(|(_, existing)| existing.as_deref() == Some(token.as_str()));
+        if !duplicate {
+            sync_attempts.push(("session_file", Some(token)));
+        }
+    }
+    sync_attempts.push(("full_sync", None));
+    sync_attempts
 }
 
 async fn fetch_room_history(
@@ -1900,4 +1908,49 @@ fn modified_epoch_secs(metadata: &fs::Metadata) -> Result<u64> {
         .duration_since(UNIX_EPOCH)
         .context("mtime predates unix epoch")?
         .as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_sync_attempts;
+
+    #[test]
+    fn sync_attempts_include_all_fallbacks_in_order() {
+        let attempts = build_sync_attempts(
+            Some("persisted-token".to_string()),
+            Some("session-token".to_string()),
+        );
+
+        assert_eq!(
+            attempts,
+            vec![
+                ("persisted_checkpoint", Some("persisted-token".to_string())),
+                ("session_file", Some("session-token".to_string())),
+                ("full_sync", None),
+            ]
+        );
+    }
+
+    #[test]
+    fn sync_attempts_deduplicate_matching_tokens() {
+        let attempts = build_sync_attempts(
+            Some("same-token".to_string()),
+            Some("same-token".to_string()),
+        );
+
+        assert_eq!(
+            attempts,
+            vec![
+                ("persisted_checkpoint", Some("same-token".to_string())),
+                ("full_sync", None),
+            ]
+        );
+    }
+
+    #[test]
+    fn sync_attempts_still_full_sync_without_tokens() {
+        let attempts = build_sync_attempts(None, None);
+
+        assert_eq!(attempts, vec![("full_sync", None)]);
+    }
 }
