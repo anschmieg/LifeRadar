@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -209,9 +210,9 @@ fn provider_hints(event_type: &str, raw_json: &Value, content: &Value) -> Vec<St
 }
 
 fn iso_from_unix_ms(ms: u64) -> String {
-    let secs = ms / 1000;
-    let millis = ms % 1000;
-    format!("{secs}.{millis:03}Z")
+    DateTime::<Utc>::from_timestamp_millis(ms as i64)
+        .map(|ts| ts.to_rfc3339())
+        .unwrap_or_else(|| "1970-01-01T00:00:00+00:00".to_string())
 }
 
 #[cfg(test)]
@@ -275,5 +276,10 @@ mod tests {
         );
         assert!(parsed.content_text.contains("custom event"));
         assert!(parsed.content_json.contains("beeper"));
+    }
+
+    #[test]
+    fn formats_timestamp_as_rfc3339() {
+        assert_eq!(iso_from_unix_ms(1710000000123), "2024-03-09T16:00:00.123+00:00");
     }
 }
