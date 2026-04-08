@@ -212,6 +212,7 @@ async def health():
 # --- /alerts ---
 @app.get("/alerts", response_model=list[Alert])
 async def get_alerts(
+    request: Request,
     limit: int = Query(50, ge=1, le=200),
     min_priority: Optional[float] = None,
 ):
@@ -219,6 +220,7 @@ async def get_alerts(
     Get conversations needing attention, surfaced as alerts.
     Includes: needs_reply, needs_read, important, overdue, blocked.
     """
+    require_api_key(request)
     pool = await get_pool()
     async with pool.acquire() as conn:
         query = """
@@ -279,12 +281,14 @@ async def get_alerts(
 # --- /conversations ---
 @app.get("/conversations", response_model=list[Conversation])
 async def get_conversations(
+    request: Request,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     source: Optional[str] = None,
     needs_reply: Optional[bool] = None,
     state: Optional[str] = None,
 ):
+    require_api_key(request)
     pool = await get_pool()
     async with pool.acquire() as conn:
         conditions = ["COALESCE(state, 'active') = $1 OR ($1 IS NULL AND COALESCE(state, 'active') != 'archived')"]
@@ -341,7 +345,8 @@ async def get_conversations(
 
 
 @app.get("/conversations/{conversation_id}", response_model=Conversation)
-async def get_conversation(conversation_id: UUID):
+async def get_conversation(conversation_id: UUID, request: Request):
+    require_api_key(request)
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -355,11 +360,13 @@ async def get_conversation(conversation_id: UUID):
 # --- /messages ---
 @app.get("/messages", response_model=list[MessageEvent])
 async def get_messages(
+    request: Request,
     conversation_id: Optional[UUID] = None,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     source: Optional[str] = None,
 ):
+    require_api_key(request)
     pool = await get_pool()
     async with pool.acquire() as conn:
         conditions = []
@@ -410,9 +417,11 @@ async def get_messages(
 # --- /commitments ---
 @app.get("/commitments", response_model=list[Commitment])
 async def get_commitments(
+    request: Request,
     status: Optional[str] = None,
     limit: int = Query(50, ge=1, le=200),
 ):
+    require_api_key(request)
     pool = await get_pool()
     async with pool.acquire() as conn:
         if status:
@@ -436,9 +445,11 @@ async def get_commitments(
 # --- /reminders ---
 @app.get("/reminders", response_model=list[Reminder])
 async def get_reminders(
+    request: Request,
     status: Optional[str] = None,
     limit: int = Query(50, ge=1, le=200),
 ):
+    require_api_key(request)
     pool = await get_pool()
     async with pool.acquire() as conn:
         if status:
@@ -462,9 +473,11 @@ async def get_reminders(
 # --- /tasks (alias for planned_actions) ---
 @app.get("/tasks", response_model=list[PlannedAction])
 async def get_tasks(
+    request: Request,
     status: Optional[str] = None,
     limit: int = Query(50, ge=1, le=200),
 ):
+    require_api_key(request)
     pool = await get_pool()
     async with pool.acquire() as conn:
         if status:
@@ -510,6 +523,7 @@ async def create_task(task: TaskCreate, request: Request):
 # --- /calendar/events ---
 @app.get("/calendar/events", response_model=list[CalendarEvent])
 async def get_calendar_events(
+    request: Request,
     from_date: Optional[datetime] = None,
     to_date: Optional[datetime] = None,
     days: Optional[int] = Query(None, ge=1, le=365),
@@ -518,6 +532,7 @@ async def get_calendar_events(
     """
     Calendar events from planned_actions with calendar_external_id set.
     """
+    require_api_key(request)
     pool = await get_pool()
     async with pool.acquire() as conn:
         conditions = ["calendar_external_id IS NOT NULL"]
@@ -628,11 +643,13 @@ async def send_message(request: MessageSendRequest, http_request: Request):
 # --- /memories ---
 @app.get("/memories", response_model=list[MemoryRecord])
 async def get_memories(
+    request: Request,
     kind: Optional[str] = None,
     subject_type: Optional[str] = None,
     active: Optional[bool] = True,
     limit: int = Query(50, ge=1, le=200),
 ):
+    require_api_key(request)
     pool = await get_pool()
     async with pool.acquire() as conn:
         conditions = []
@@ -668,7 +685,8 @@ async def get_memories(
 
 # --- /probe-status ---
 @app.get("/probe-status", response_model=list[RuntimeProbe])
-async def get_probe_status():
+async def get_probe_status(request: Request):
+    require_api_key(request)
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
@@ -694,7 +712,8 @@ async def get_probe_status():
 
 
 @app.get("/probe-status/candidates", response_model=list[MessagingCandidate])
-async def get_probe_candidates():
+async def get_probe_candidates(request: Request):
+    require_api_key(request)
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
@@ -728,6 +747,7 @@ class SearchResult(BaseModel):
 
 @app.get("/search", response_model=list[SearchResult])
 async def search(
+    request: Request,
     q: str = Query(..., min_length=1),
     limit: int = Query(20, ge=1, le=100),
     use_vector: bool = Query(False, description="Use pgvector semantic search if embeddings exist"),
@@ -741,6 +761,7 @@ async def search(
 
     Embeddings are stored in life_radar.embeddings table. Use the worker to generate them.
     """
+    require_api_key(request)
     pool = await get_pool()
     async with pool.acquire() as conn:
         likq = f"%{q}%"

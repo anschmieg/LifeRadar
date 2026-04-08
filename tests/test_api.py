@@ -38,6 +38,9 @@ class LifeRadarApiTests(unittest.TestCase):
     def tearDown(self):
         self.env_patcher.stop()
 
+    def auth_headers(self):
+        return {"x-api-key": "secret-key"}
+
     def test_send_message_requires_api_key(self):
         response = self.client.post(
             "/messages/send",
@@ -50,6 +53,27 @@ class LifeRadarApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json()["detail"], "Missing or invalid API key")
 
+    def test_private_read_endpoints_require_api_key(self):
+        endpoints = [
+            "/alerts",
+            "/conversations",
+            "/messages",
+            "/commitments",
+            "/reminders",
+            "/tasks",
+            "/calendar/events",
+            "/memories",
+            "/probe-status",
+            "/probe-status/candidates",
+            "/search?q=matrix",
+        ]
+
+        for endpoint in endpoints:
+            with self.subTest(endpoint=endpoint):
+                response = self.client.get(endpoint)
+                self.assertEqual(response.status_code, 401)
+                self.assertEqual(response.json()["detail"], "Missing or invalid API key")
+
     def test_send_message_uses_matrix_binary_for_matrix_conversations(self):
         with patch(
             "api.main.load_conversation_for_send",
@@ -57,7 +81,7 @@ class LifeRadarApiTests(unittest.TestCase):
         ), patch("api.main.run_matrix_send", new=AsyncMock(return_value="$event123")):
             response = self.client.post(
                 "/messages/send",
-                headers={"x-api-key": "secret-key"},
+                headers=self.auth_headers(),
                 json={
                     "conversation_id": "11111111-1111-1111-1111-111111111111",
                     "content_text": "hello from test",
@@ -76,7 +100,7 @@ class LifeRadarApiTests(unittest.TestCase):
         ):
             response = self.client.post(
                 "/messages/send",
-                headers={"x-api-key": "secret-key"},
+                headers=self.auth_headers(),
                 json={
                     "conversation_id": "11111111-1111-1111-1111-111111111111",
                     "content_text": "hello from test",
@@ -92,7 +116,7 @@ class LifeRadarApiTests(unittest.TestCase):
         pool = FakePool(connection)
 
         with patch("api.main.get_pool", new=AsyncMock(return_value=pool)):
-            response = self.client.get("/tasks?limit=2")
+            response = self.client.get("/tasks?limit=2", headers=self.auth_headers())
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), [])
@@ -107,7 +131,10 @@ class LifeRadarApiTests(unittest.TestCase):
         pool = FakePool(connection)
 
         with patch("api.main.get_pool", new=AsyncMock(return_value=pool)):
-            response = self.client.get("/calendar/events?days=14&limit=5")
+            response = self.client.get(
+                "/calendar/events?days=14&limit=5",
+                headers=self.auth_headers(),
+            )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), [])
@@ -125,7 +152,10 @@ class LifeRadarApiTests(unittest.TestCase):
         pool = FakePool(connection)
 
         with patch("api.main.get_pool", new=AsyncMock(return_value=pool)):
-            response = self.client.get("/search?q=matrix&limit=2")
+            response = self.client.get(
+                "/search?q=matrix&limit=2",
+                headers=self.auth_headers(),
+            )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), [])
@@ -178,7 +208,10 @@ class LifeRadarApiTests(unittest.TestCase):
         pool = FakePool(connection)
 
         with patch("api.main.get_pool", new=AsyncMock(return_value=pool)):
-            response = self.client.get("/conversations?limit=1")
+            response = self.client.get(
+                "/conversations?limit=1",
+                headers=self.auth_headers(),
+            )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.json()), 1)
@@ -213,7 +246,10 @@ class LifeRadarApiTests(unittest.TestCase):
         pool = FakePool(connection)
 
         with patch("api.main.get_pool", new=AsyncMock(return_value=pool)):
-            response = self.client.get("/messages?limit=1&source=matrix")
+            response = self.client.get(
+                "/messages?limit=1&source=matrix",
+                headers=self.auth_headers(),
+            )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.json()), 1)
@@ -242,7 +278,7 @@ class LifeRadarApiTests(unittest.TestCase):
         pool = FakePool(connection)
 
         with patch("api.main.get_pool", new=AsyncMock(return_value=pool)):
-            response = self.client.get("/probe-status")
+            response = self.client.get("/probe-status", headers=self.auth_headers())
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.json()), 1)
@@ -268,7 +304,7 @@ class LifeRadarApiTests(unittest.TestCase):
         pool = FakePool(connection)
 
         with patch("api.main.get_pool", new=AsyncMock(return_value=pool)):
-            response = self.client.get("/probe-status")
+            response = self.client.get("/probe-status", headers=self.auth_headers())
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()[0]["metadata"], {"store_path": "/tmp/store"})
@@ -298,7 +334,7 @@ class LifeRadarApiTests(unittest.TestCase):
         pool = FakePool(connection)
 
         with patch("api.main.get_pool", new=AsyncMock(return_value=pool)):
-            response = self.client.get("/messages?limit=1")
+            response = self.client.get("/messages?limit=1", headers=self.auth_headers())
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()[0]["content_json"], {"kind": "text"})
@@ -310,7 +346,10 @@ class LifeRadarApiTests(unittest.TestCase):
         pool = FakePool(connection)
 
         with patch("api.main.get_pool", new=AsyncMock(return_value=pool)):
-            response = self.client.get("/conversations?limit=2")
+            response = self.client.get(
+                "/conversations?limit=2",
+                headers=self.auth_headers(),
+            )
 
         self.assertEqual(response.status_code, 200)
         query = connection.fetch.await_args.args[0]
