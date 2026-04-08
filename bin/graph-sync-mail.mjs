@@ -14,13 +14,14 @@ import {
 const clientId = env('MSGRAPH_CLIENT_ID');
 const clientSecret = env('MSGRAPH_CLIENT_SECRET', '');
 const tenantId = env('MSGRAPH_TENANT_ID');
+const authority = env('MSGRAPH_AUTHORITY', tenantId || 'common');
 const envRefreshToken = env('MSGRAPH_REFRESH_TOKEN');
 const metadataKey = 'msgraph_mail_sync';
 const authKey = 'msgraph_auth';
 const fixtureDir = env('LIFE_RADAR_MSGRAPH_FIXTURE_DIR');
 const tokenRetryDelaysMs = [1000, 2000, 4000];
 
-if (!fixtureDir && (!clientId || !tenantId || !envRefreshToken)) {
+if (!fixtureDir && (!clientId || !authority || !envRefreshToken)) {
   console.log('life-radar msgraph sync skipped: credentials not configured');
   process.exit(0);
 }
@@ -115,7 +116,7 @@ async function acquireToken() {
   let lastError;
   for (let attempt = 0; attempt <= tokenRetryDelaysMs.length; attempt += 1) {
     try {
-      token = await postFormJson(`https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`, tokenRequest);
+      token = await postFormJson(`https://login.microsoftonline.com/${authority}/oauth2/v2.0/token`, tokenRequest);
       break;
     } catch (error) {
       lastError = error;
