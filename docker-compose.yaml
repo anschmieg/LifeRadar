@@ -89,6 +89,9 @@ services:
       GOOGLE_CALENDAR_ID: "${GOOGLE_CALENDAR_ID:-primary}"
     expose:
       - "8080"
+    volumes:
+      - "${LIFE_RADAR_IDENTITY_DIR:-/data/life-radar/identity}:/app/identity"
+      - "${LIFE_RADAR_WORKSPACE_DIR:-/data/life-radar/workspace}:/app/workspace"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
