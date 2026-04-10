@@ -348,8 +348,11 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "to": {
-                        "type": "string",
-                        "description": "Recipient email address",
+                        "anyOf": [
+                            {"type": "string", "description": "Recipient email address"},
+                            {"type": "array", "items": {"type": "string"}, "description": "List of recipient email addresses"},
+                        ],
+                        "description": "Recipient email address(es)",
                     },
                     "subject": {
                         "type": "string",
@@ -369,8 +372,10 @@ async def list_tools() -> list[Tool]:
                         "description": "Optional Outlook message ID to reply to (for threading)",
                     },
                     "cc": {
-                        "type": "string",
-                        "description": "Optional CC recipients (comma-separated emails)",
+                        "anyOf": [
+                            {"type": "string", "description": "CC recipients (comma-separated emails)"},
+                            {"type": "array", "items": {"type": "string"}, "description": "List of CC email addresses"},
+                        ],
                     },
                     "importance": {
                         "type": "string",
@@ -459,19 +464,28 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         case "send-outlook-email":
             if not OUTLOOK_MCP_ENABLED:
                 return [TextContent(type="text", text=json.dumps({"error": "Outlook MCP is not enabled. Set OUTLOOK_MCP_ENABLED=true to enable."}))]
-            # Map our simplified params to Softeria's send-mail tool
-            outlook_args = {
-                "to": params.get("to", ""),
+            # Map our simplified params to Softeria's send-mail schema:
+            # { body: { Message: { subject, body: { content, contentType }, toRecipients: [{ emailAddress: { address } }] } } }
+            to_list = params.get("to", "")
+            if isinstance(to_list, str):
+                to_list = [to_list]
+            recipients = [{"emailAddress": {"address": addr.strip()}} for addr in to_list if addr.strip()]
+            message = {
                 "subject": params.get("subject", ""),
-                "body": params.get("body", ""),
-                "bodyType": params.get("body_type", "text"),
+                "body": {
+                    "content": params.get("body", ""),
+                    "contentType": params.get("body_type", "text"),
+                },
+                "toRecipients": recipients,
             }
             if params.get("cc"):
-                outlook_args["cc"] = params["cc"]
+                cc_list = params["cc"] if isinstance(params["cc"], list) else [params["cc"]]
+                message["ccRecipients"] = [{"emailAddress": {"address": addr.strip()}} for addr in cc_list if addr.strip()]
             if params.get("importance"):
-                outlook_args["importance"] = params["importance"]
+                message["importance"] = params["importance"]
             if params.get("reply_to_message_id"):
-                outlook_args["replyToMessageId"] = params["reply_to_message_id"]
+                message["replyToMessageId"] = params["reply_to_message_id"]
+            outlook_args = {"body": {"Message": message}}
             result = await call_outlook_mcp("send-mail", outlook_args)
         case "search-outlook-email":
             if not OUTLOOK_MCP_ENABLED:
