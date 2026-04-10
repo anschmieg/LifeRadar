@@ -48,6 +48,13 @@ services:
       LIFE_RADAR_API_URL: http://life-radar-api:8000
       LIFE_RADAR_PUBLIC_API_URL: "${LIFE_RADAR_PUBLIC_API_URL:-}"
       LIFE_RADAR_API_KEY: "${LIFE_RADAR_API_KEY:-}"
+      OUTLOOK_MCP_ENABLED: "${OUTLOOK_MCP_ENABLED:-false}"
+      # Reuse existing MSGraph credentials for Outlook MCP if MS365 vars aren't set
+      MS365_MCP_CLIENT_ID: "${MS365_MCP_CLIENT_ID:-${MSGRAPH_CLIENT_ID:-}}"
+      MS365_MCP_CLIENT_SECRET: "${MS365_MCP_CLIENT_SECRET:-${MSGRAPH_CLIENT_SECRET:-}}"
+      MS365_MCP_TENANT_ID: "${MS365_MCP_TENANT_ID:-${MSGRAPH_TENANT_ID:-common}}"
+    volumes:
+      - outlook-mcp-tokens:/app/outlook-token-cache
     expose:
       - "8090"
     extra_hosts:
@@ -116,6 +123,9 @@ services:
     networks:
       - coolify
     restart: unless-stopped
+
+volumes:
+  outlook-mcp-tokens:
 
 networks:
   coolify:

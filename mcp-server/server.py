@@ -30,7 +30,96 @@ LIFE_RADAR_PUBLIC_API_URL = os.environ.get("LIFE_RADAR_PUBLIC_API_URL", "").stri
 APP_NAME = "liferadar-mcp"
 VERSION = "1.0.0"
 
+# Outlook MCP pass-through configuration
+OUTLOOK_MCP_ENABLED = os.environ.get("OUTLOOK_MCP_ENABLED", "false").lower() == "true"
+
+# Reuse MSGraph credentials for the Softeria subprocess if MS365 vars aren't set.
+# This avoids requiring a separate Azure AD app registration.
+MS365_CLIENT_ID = os.environ.get("MS365_MCP_CLIENT_ID") or os.environ.get("MSGRAPH_CLIENT_ID", "")
+MS365_CLIENT_SECRET = os.environ.get("MS365_MCP_CLIENT_SECRET") or os.environ.get("MSGRAPH_CLIENT_SECRET", "")
+MS365_TENANT_ID = os.environ.get("MS365_MCP_TENANT_ID") or os.environ.get("MSGRAPH_TENANT_ID", "common")
+
 server = Server(APP_NAME)
+
+# ── Outlook MCP subprocess client ────────────────────────────────────────────
+
+_outlook_proc = None
+_outlock = asyncio.Lock()
+
+
+async def _get_outlook_proc():
+    """Get or start the Softeria MS-365 MCP subprocess (stdio mode)."""
+    global _outlook_proc
+    async with _outlock:
+        if _outlook_proc is not None and _outlook_proc.returncode is None:
+            return _outlook_proc
+        try:
+            import subprocess
+            cmd = ["npx", "-y", "@softeria/ms-365-mcp-server", "--preset", "mail"]
+            env = os.environ.copy()
+            # Pass MS365 credentials to the subprocess, reusing MSGraph vars as fallback
+            env["MS365_MCP_CLIENT_ID"] = MS365_CLIENT_ID
+            env["MS365_MCP_CLIENT_SECRET"] = MS365_CLIENT_SECRET
+            env["MS365_MCP_TENANT_ID"] = MS365_TENANT_ID
+            _outlook_proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+            # Give it a moment to start
+            import asyncio as _aio
+            await _aio.sleep(2)
+            if _outlook_proc.poll() is not None:
+                stderr = _outlook_proc.stderr.read().decode() if _outlook_proc.stderr else ""
+                raise RuntimeError(f"Softeria MS-365 MCP exited immediately: {stderr[:500]}")
+            return _outlook_proc
+        except FileNotFoundError:
+            raise RuntimeError("npx not found — Node.js must be installed for Outlook MCP")
+
+
+async def call_outlook_mcp(tool_name: str, arguments: dict) -> list[dict]:
+    """Call a tool on the Softeria MS-365 MCP server via stdio JSON-RPC."""
+    proc = await _get_outlook_proc()
+    request = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": tool_name, "arguments": arguments},
+    }
+    try:
+        proc.stdin.write((json.dumps(request) + "\n").encode())
+        proc.stdin.flush()
+        # Read response line (stdio mode responds with one JSON per line)
+        response_line = proc.stdout.readline()
+        if not response_line:
+            return [{"error": "Outlook MCP returned empty response"}]
+        data = json.loads(response_line.decode())
+        result = data.get("result", {})
+        content = result.get("content", [])
+        if content:
+            texts = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    texts.append(item.get("text", ""))
+            if texts:
+                try:
+                    parsed = json.loads(texts[0])
+                    if isinstance(parsed, list):
+                        return parsed
+                    if isinstance(parsed, dict):
+                        return [parsed]
+                    return [{"text": t} for t in texts]
+                except (ValueError, TypeError):
+                    return [{"text": t} for t in texts]
+        # Check for errors
+        error = data.get("error")
+        if error:
+            return [{"error": f"Outlook MCP error: {error.get('message', str(error))}"}]
+        return [{"result": str(result)}]
+    except Exception as e:
+        return [{"error": f"Outlook MCP communication error: {str(e)}"}]
 
 
 # ── MCP tool definitions ──────────────────────────────────────────────────────
@@ -254,6 +343,75 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="send-outlook-email",
+            description="Send an email via Outlook/Microsoft 365. Requires OUTLOOK_MCP_ENABLED=true and a configured Outlook MCP server. Use this to reply to Outlook conversations identified through the conversations or alerts tools.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "to": {
+                        "type": "string",
+                        "description": "Recipient email address",
+                    },
+                    "subject": {
+                        "type": "string",
+                        "description": "Email subject line",
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Email body content (plain text or HTML)",
+                    },
+                    "body_type": {
+                        "type": "string",
+                        "description": "Body content type: 'text' (default) or 'html'",
+                        "default": "text",
+                    },
+                    "reply_to_message_id": {
+                        "type": "string",
+                        "description": "Optional Outlook message ID to reply to (for threading)",
+                    },
+                    "cc": {
+                        "type": "string",
+                        "description": "Optional CC recipients (comma-separated emails)",
+                    },
+                    "importance": {
+                        "type": "string",
+                        "description": "Email importance: 'low', 'normal', 'high'",
+                        "default": "normal",
+                    },
+                },
+                "required": ["to", "subject", "body"],
+            },
+        ),
+        Tool(
+            name="search-outlook-email",
+            description="Search Outlook/Microsoft 365 emails. Requires OUTLOOK_MCP_ENABLED=true. Returns matching messages with subject, sender, and preview.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query (subject, sender, body keywords)",
+                    },
+                    "folder": {
+                        "type": "string",
+                        "description": "Mail folder to search (default: inbox)",
+                        "default": "inbox",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max results (default 10, max 50)",
+                        "default": 10,
+                    },
+                    "unread_only": {
+                        "type": "boolean",
+                        "description": "Only return unread messages",
+                        "default": False,
+                    },
+                },
+                "required": ["query"],
+            },
+        ),
+        Tool(
             name="health",
             description="Health check — verify the LifeRadar API and database are reachable.",
             inputSchema={"type": "object", "properties": {}},
@@ -299,6 +457,36 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             result = await call_api("probe-status/candidates")
         case "search":
             result = await call_api("search", params)
+        case "send-outlook-email":
+            if not OUTLOOK_MCP_ENABLED:
+                return [TextContent(type="text", text=json.dumps({"error": "Outlook MCP is not enabled. Set OUTLOOK_MCP_ENABLED=true to enable."}))]
+            # Map our simplified params to Softeria's send-mail tool
+            outlook_args = {
+                "to": params.get("to", ""),
+                "subject": params.get("subject", ""),
+                "body": params.get("body", ""),
+                "bodyType": params.get("body_type", "text"),
+            }
+            if params.get("cc"):
+                outlook_args["cc"] = params["cc"]
+            if params.get("importance"):
+                outlook_args["importance"] = params["importance"]
+            if params.get("reply_to_message_id"):
+                outlook_args["replyToMessageId"] = params["reply_to_message_id"]
+            result = await call_outlook_mcp("send-mail", outlook_args)
+        case "search-outlook-email":
+            if not OUTLOOK_MCP_ENABLED:
+                return [TextContent(type="text", text=json.dumps({"error": "Outlook MCP is not enabled. Set OUTLOOK_MCP_ENABLED=true to enable."}))]
+            # Use Softeria's search-query or list-mail-messages
+            if params.get("query"):
+                outlook_args = {
+                    "query": params["query"],
+                }
+                if params.get("limit"):
+                    outlook_args["top"] = params["limit"]
+                result = await call_outlook_mcp("search-query", outlook_args)
+            else:
+                result = [{"error": "query parameter is required"}]
         case _:
             result = [{"error": f"Unknown tool: {name}"}]
 
