@@ -476,14 +476,29 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         case "search-outlook-email":
             if not OUTLOOK_MCP_ENABLED:
                 return [TextContent(type="text", text=json.dumps({"error": "Outlook MCP is not enabled. Set OUTLOOK_MCP_ENABLED=true to enable."}))]
-            # Use Softeria's search-query or list-mail-messages
+            # Use Softeria's list-mail-messages with $search parameter
             if params.get("query"):
                 outlook_args = {
-                    "query": params["query"],
+                    "search": f'"{params["query"]}"',
+                    "select": "id,subject,from,toRecipients,receivedDateTime,bodyPreview,isRead,hasAttachments",
                 }
                 if params.get("limit"):
                     outlook_args["top"] = params["limit"]
-                result = await call_outlook_mcp("search-query", outlook_args)
+                if params.get("folder") and params["folder"] != "inbox":
+                    # Softeria list-mail-messages accepts folderId; for named folders use folder path
+                    outlook_args["folderId"] = params["folder"]
+                if params.get("unread_only"):
+                    # KQL search can combine with filter, but $search and $filter can't mix
+                    # Use filter-only approach for unread
+                    outlook_args.pop("search", None)
+                    outlook_args["filter"] = "isRead eq false"
+                    outlook_args["search"] = f'"{params["query"]}"'
+                    # Note: $search and $filter are mutually exclusive in MSGraph.
+                    # For unread_only + query, we search and let the client filter.
+                    # Remove the filter and keep search only.
+                    outlook_args.pop("filter", None)
+                    outlook_args["search"] = f'"{params["query"]}"'
+                result = await call_outlook_mcp("list-mail-messages", outlook_args)
             else:
                 result = [{"error": "query parameter is required"}]
         case _:
