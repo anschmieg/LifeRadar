@@ -342,6 +342,20 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="login-outlook",
+            description="Authenticate with Microsoft 365 for Outlook email access. Triggers device code flow — returns a URL and code to complete login in a browser. Only needed once; token is cached for subsequent use.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "force": {
+                        "type": "boolean",
+                        "description": "Force re-authentication even if already logged in",
+                        "default": False,
+                    },
+                },
+            },
+        ),
+        Tool(
             name="send-outlook-email",
             description="Send an email via Outlook/Microsoft 365. Requires OUTLOOK_MCP_ENABLED=true and a configured Outlook MCP server. Use this to reply to Outlook conversations identified through the conversations or alerts tools.",
             inputSchema={
@@ -461,6 +475,13 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             result = await call_api("probe-status/candidates")
         case "search":
             result = await call_api("search", params)
+        case "login-outlook":
+            if not OUTLOOK_MCP_ENABLED:
+                return [TextContent(type="text", text=json.dumps({"error": "Outlook MCP is not enabled. Set OUTLOOK_MCP_ENABLED=true to enable."}))]
+            login_args = {}
+            if params.get("force"):
+                login_args["force"] = True
+            result = await call_outlook_mcp("login", login_args)
         case "send-outlook-email":
             if not OUTLOOK_MCP_ENABLED:
                 return [TextContent(type="text", text=json.dumps({"error": "Outlook MCP is not enabled. Set OUTLOOK_MCP_ENABLED=true to enable."}))]
