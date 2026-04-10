@@ -33,11 +33,10 @@ VERSION = "1.0.0"
 # Outlook MCP pass-through configuration
 OUTLOOK_MCP_ENABLED = os.environ.get("OUTLOOK_MCP_ENABLED", "false").lower() == "true"
 
-# Reuse MSGraph credentials for the Softeria subprocess if MS365 vars aren't set.
-# This avoids requiring a separate Azure AD app registration.
-MS365_CLIENT_ID = os.environ.get("MS365_MCP_CLIENT_ID") or os.environ.get("MSGRAPH_CLIENT_ID", "")
-MS365_CLIENT_SECRET = os.environ.get("MS365_MCP_CLIENT_SECRET") or os.environ.get("MSGRAPH_CLIENT_SECRET", "")
-MS365_TENANT_ID = os.environ.get("MS365_MCP_TENANT_ID") or os.environ.get("MSGRAPH_TENANT_ID", "common")
+# Use MSGraph credentials directly for the Softeria subprocess (same Azure AD app).
+MS365_CLIENT_ID = os.environ.get("MSGRAPH_CLIENT_ID", "")
+MS365_CLIENT_SECRET = os.environ.get("MSGRAPH_CLIENT_SECRET", "")
+MS365_TENANT_ID = os.environ.get("MSGRAPH_TENANT_ID", "common")
 
 server = Server(APP_NAME)
 
