@@ -126,24 +126,29 @@ async def _discover_outlook_tools() -> list[dict]:
     if _outlook_tools_cache is not None:
         return _outlook_tools_cache
 
+    print("[liferadar] Discovering Outlook tools from Softeria subprocess...", flush=True)
     proc = await _get_outlook_proc()
+    print(f"[liferadar] Got Softeria subprocess pid={proc.pid}", flush=True)
+
+    loop = asyncio.get_event_loop()
+    # Send initialize
+    init_req = json.dumps({
+        "jsonrpc": "2.0", "id": 0, "method": "initialize",
+        "params": {"protocolVersion": "2025-03-26", "capabilities": {},
+                   "clientInfo": {"name": "liferadar-mcp", "version": "1.0.0"}}
+    }) + "\n"
     async with _stdio_lock:
-        loop = asyncio.get_event_loop()
-        # Send initialize
-        init_req = json.dumps({
-            "jsonrpc": "2.0", "id": 0, "method": "initialize",
-            "params": {"protocolVersion": "2025-03-26", "capabilities": {},
-                       "clientInfo": {"name": "liferadar-mcp", "version": "1.0.0"}}
-        }) + "\n"
         await loop.run_in_executor(None, proc.stdin.write, init_req.encode())
         await loop.run_in_executor(None, proc.stdin.flush)
-        await loop.run_in_executor(None, proc.stdout.readline)  # consume init response
+        init_resp = await loop.run_in_executor(None, proc.stdout.readline)
+        print(f"[liferadar] Softeria init response received: {len(init_resp)} bytes", flush=True)
 
         # Send tools/list
         list_req = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}) + "\n"
         await loop.run_in_executor(None, proc.stdin.write, list_req.encode())
         await loop.run_in_executor(None, proc.stdin.flush)
         resp = await loop.run_in_executor(None, proc.stdout.readline)
+        print(f"[liferadar] Softeria tools/list response: {len(resp)} bytes", flush=True)
 
     data = json.loads(resp.decode())
     tools = data.get("result", {}).get("tools", [])
@@ -156,6 +161,7 @@ async def _discover_outlook_tools() -> list[dict]:
             "description": f"Outlook: {t.get('description', '')}",
             "inputSchema": t.get("inputSchema", {"type": "object", "properties": {}}),
         })
+    print(f"[liferadar] Discovered {len(_outlook_tools_cache)} Outlook tools", flush=True)
     return _outlook_tools_cache
 
 
