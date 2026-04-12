@@ -407,9 +407,12 @@ async def list_tools() -> list[Tool]:
             for t in outlook_tools:
                 tools.append(Tool(name=t["name"], description=t["description"],
                                   inputSchema=t["inputSchema"]))
+            print(f"[liferadar] Discovered {len(outlook_tools)} Outlook tools", flush=True)
         except Exception as e:
             import sys
-            print(f"[liferadar] Warning: Could not discover Outlook tools: {e}", file=sys.stderr)
+            import traceback
+            print(f"[liferadar] Warning: Could not discover Outlook tools: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
 
     return tools
 
