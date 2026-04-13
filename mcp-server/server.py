@@ -407,6 +407,7 @@ async def list_tools() -> list[Tool]:
     ]
 
     # Dynamically discover and add Outlook tools from Softeria subprocess
+    print(f"[liferadar] list_tools called, OUTLOOK_MCP_ENABLED={OUTLOOK_MCP_ENABLED}, cache={_outlook_tools_cache is not None}", flush=True)
     if OUTLOOK_MCP_ENABLED:
         try:
             outlook_tools = await _discover_outlook_tools()
