@@ -126,29 +126,25 @@ async def _discover_outlook_tools() -> list[dict]:
     if _outlook_tools_cache is not None:
         return _outlook_tools_cache
 
-    print("[liferadar] Discovering Outlook tools from Softeria subprocess...", flush=True)
     proc = await _get_outlook_proc()
-    print(f"[liferadar] Got Softeria subprocess pid={proc.pid}", flush=True)
-
     loop = asyncio.get_event_loop()
-    # Send initialize
+
+    # Send initialize + tools/list requests
     init_req = json.dumps({
         "jsonrpc": "2.0", "id": 0, "method": "initialize",
         "params": {"protocolVersion": "2025-03-26", "capabilities": {},
                    "clientInfo": {"name": "liferadar-mcp", "version": "1.0.0"}}
     }) + "\n"
+    list_req = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}) + "\n"
+
     async with _stdio_lock:
         await loop.run_in_executor(None, proc.stdin.write, init_req.encode())
         await loop.run_in_executor(None, proc.stdin.flush)
-        init_resp = await loop.run_in_executor(None, proc.stdout.readline)
-        print(f"[liferadar] Softeria init response received: {len(init_resp)} bytes", flush=True)
+        await loop.run_in_executor(None, proc.stdout.readline)  # consume init response
 
-        # Send tools/list
-        list_req = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}) + "\n"
         await loop.run_in_executor(None, proc.stdin.write, list_req.encode())
         await loop.run_in_executor(None, proc.stdin.flush)
         resp = await loop.run_in_executor(None, proc.stdout.readline)
-        print(f"[liferadar] Softeria tools/list response: {len(resp)} bytes", flush=True)
 
     data = json.loads(resp.decode())
     tools = data.get("result", {}).get("tools", [])
@@ -161,7 +157,6 @@ async def _discover_outlook_tools() -> list[dict]:
             "description": f"Outlook: {t.get('description', '')}",
             "inputSchema": t.get("inputSchema", {"type": "object", "properties": {}}),
         })
-    print(f"[liferadar] Discovered {len(_outlook_tools_cache)} Outlook tools", flush=True)
     return _outlook_tools_cache
 
 
@@ -238,8 +233,7 @@ async def call_api_post(path: str, body: dict | None = None) -> list[dict]:
 @server.list_tools()
 async def list_tools() -> list[Tool]:
     """Declare the tools this MCP server exposes."""
-    print(f"[liferadar] list_tools() called", flush=True)
-    return [
+    tools = [
         Tool(
             name="alerts",
             description="Get conversations needing attention: needs_reply, needs_read, important, overdue, blocked. Returns top priority conversations requiring action.",
@@ -408,14 +402,12 @@ async def list_tools() -> list[Tool]:
     ]
 
     # Dynamically discover and add Outlook tools from Softeria subprocess
-    print(f"[liferadar] list_tools called, OUTLOOK_MCP_ENABLED={OUTLOOK_MCP_ENABLED}, cache={_outlook_tools_cache is not None}", flush=True)
     if OUTLOOK_MCP_ENABLED:
         try:
             outlook_tools = await _discover_outlook_tools()
             for t in outlook_tools:
                 tools.append(Tool(name=t["name"], description=t["description"],
                                   inputSchema=t["inputSchema"]))
-            print(f"[liferadar] Discovered {len(outlook_tools)} Outlook tools", flush=True)
         except Exception as e:
             import sys
             import traceback
@@ -538,7 +530,6 @@ async def process_jsonrpc_request(rpc_request: dict) -> dict | None:
     method = rpc_request.get("method")
     request_id = rpc_request.get("id")
     params = rpc_request.get("params", {})
-    print(f"[liferadar] JSON-RPC method={method}", flush=True)
     
     if jsonrpc != "2.0" or not method:
         return {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": request_id}
