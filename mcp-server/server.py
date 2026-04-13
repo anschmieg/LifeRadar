@@ -238,6 +238,7 @@ async def call_api_post(path: str, body: dict | None = None) -> list[dict]:
 @server.list_tools()
 async def list_tools() -> list[Tool]:
     """Declare the tools this MCP server exposes."""
+    print(f"[liferadar] list_tools() called", flush=True)
     return [
         Tool(
             name="alerts",
@@ -537,6 +538,7 @@ async def process_jsonrpc_request(rpc_request: dict) -> dict | None:
     method = rpc_request.get("method")
     request_id = rpc_request.get("id")
     params = rpc_request.get("params", {})
+    print(f"[liferadar] JSON-RPC method={method}", flush=True)
     
     if jsonrpc != "2.0" or not method:
         return {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": request_id}
