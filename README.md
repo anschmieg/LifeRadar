@@ -50,3 +50,11 @@ separate MCP subdomain.
 
 - SPEC.md - Full specification and roadmap
 - schema/ - PostgreSQL schema with pgvector
+
+## Project Utilities
+
+Utility scripts live in `bin/`. For the Nextcloud legacy migration compare status, run:
+
+```bash
+./bin/nextcloud-status
+```

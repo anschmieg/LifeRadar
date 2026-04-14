@@ -280,6 +280,9 @@ mod tests {
 
     #[test]
     fn formats_timestamp_as_rfc3339() {
-        assert_eq!(iso_from_unix_ms(1710000000123), "2024-03-09T16:00:00.123+00:00");
+        assert_eq!(
+            iso_from_unix_ms(1710000000123),
+            "2024-03-09T16:00:00.123+00:00"
+        );
     }
 }

@@ -1715,6 +1715,7 @@ name = "life-radar-matrix-rust-probe"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "matrix-sdk",
  "reqwest",
  "serde",

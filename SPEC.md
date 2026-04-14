@@ -118,7 +118,7 @@ OpenClaw container is the compiled form of `matrix-rust-probe/` in this repo. Th
 
 ## Phase 2 — API Server
 
-**Status: TODO** | **Owner:** Hermes agent
+**Status: DONE** (2026-04-08)
 
 **Goal:** Expose the DB via a FastAPI HTTP server consumed by Hermes.
 
@@ -140,77 +140,86 @@ GET   /tasks                list planned_actions
 POST  /tasks                create task
 GET   /calendar/events      read Google Calendar (date range)
 POST  /calendar/events      upsert calendar event
-POST  /messages/send        send Matrix message (user-approved only; non-matrix returns 501 for now)
+POST  /messages/send        send Matrix message (user-approved only; Outlook sends via MCP tools)
 GET   /search               semantic search over memories + conversations
 GET   /probe-status         probe health + last-run timestamps
 ```
 
-### TODO
+### Completed
 
-- [ ] Create `api/` directory with FastAPI application
-- [ ] Define Pydantic models for all request/response types
-- [ ] Implement each endpoint with `asyncpg`
-- [ ] Add OpenAPI route at `/openapi.json`
-- [ ] Write `Dockerfile.api` (or extend `Dockerfile.worker` with multi-target)
-- [x] Add API key auth (HMAC or static key for Hermes → API calls)
-- [ ] Add Docker Compose service entry for `life-radar-api`
-- [ ] Update `.env.example` with API server port variable
+- [x] Create `api/` directory with FastAPI application
+- [x] Define Pydantic models for all request/response types
+- [x] Implement each endpoint with `asyncpg`
+- [x] Add OpenAPI route at `/openapi.json`
+- [x] Write `Dockerfile.api`
+- [x] Add API key auth (static key for Hermes → API calls)
+- [x] Add Docker Compose service entry for `life-radar-api`
+- [x] Update `.env.example` with API server port variable
+- [x] Add Matrix bridge service for real Matrix sends
+- [x] Deploy to oracle via Coolify
 
-### OpenAPI → MCP Strategy
+### Known Limitation
 
-FastAPI auto-generates OpenAPI 3.1 at `/openapi.json`. Use `openapi-to-mcp` to
-auto-generate the MCP tool schema from the same spec — define the API once,
-expose it both as HTTP and as MCP tools.
+`POST /messages/send` returns 501 for non-Matrix sources. Outlook email sends are
+available through the MCP server's `outlook-send-mail` and `outlook-reply-mail-message` tools.
 
 ---
 
 ## Phase 3 — MCP Server
 
-**Status: TODO** | **Owner:** Hermes agent
+**Status: DONE** (2026-04-13)
 
-**Goal:** Hermes connects to LifeRadar as an MCP server.
+**Goal:** Hermes connects to LifeRadar as an MCP server with full Outlook integration.
 
-### Approach
+### Implementation
 
-1. FastAPI generates OpenAPI 3.1 at `/openapi.json`
-2. `openapi-to-mcp` CLI generates MCP tool definitions from the spec
-3. MCP server runs as a stdio sidecar (same container as API, or separate)
-4. Hermes `mcp_config.yaml` points to the MCP server endpoint
+- Hand-coded Starlette + hypercorn MCP server (`mcp-server/server.py`)
+- Streamable HTTP transport with JSON-RPC dispatch
+- LifeRadar API tools (14): alerts, conversations, conversation, messages, commitments,
+  reminders, tasks, calendar_events, send-message, memories, probe_status, probe_candidates,
+  search, health
+- **Dynamic Outlook integration**: Softeria MS-365 MCP server runs as a subprocess inside
+  the MCP container. At startup, LifeRadar discovers all Softeria mail tools and exposes
+  them as `outlook-*` prefixed tools with full native schemas (38 Outlook tools total).
+- Outlook auth via device code flow (`login-outlook` tool), token persisted in Docker volume
+- Reuses MSGraph Azure AD app credentials (`MSGRAPH_CLIENT_ID`, etc.)
 
-**Alternative:** `fastapi-mcp` decorator — simpler but less flexible.
-
-### MCP Tools (auto-generated)
+### Architecture
 
 ```
-alerts           GET  /alerts
-conversations    GET  /conversations
-conversation     GET  /conversations/{id}
-memories         GET  /memories
-tasks            GET/POST /tasks
-calendar-events  GET/POST /calendar/events
-send-message     POST /messages/send
-search           GET  /search
-probe-status     GET  /probe-status
+Agent
+  │
+  ▼
+LifeRadar MCP (port 8090)
+  ├── alerts, conversations, messages     ← LifeRadar API (read/triage)
+  ├── send-message (Matrix)               ← LifeRadar API → Matrix bridge
+  ├── calendar_events, tasks, memories    ← LifeRadar API
+  ├── login-outlook                       ← Softeria auth (device code flow)
+  ├── outlook-send-mail                   ← Softeria MS-365 MCP (mail send)
+  ├── outlook-reply-mail-message          ← Softeria MS-365 MCP (mail reply)
+  ├── outlook-list-mail-messages          ← Softeria MS-365 MCP (mail search)
+  ├── outlook-get-mail-message            ← Softeria MS-365 MCP (read full body)
+  ├── outlook-list-mail-folders           ← Softeria MS-365 MCP (folder browse)
+  ├── outlook-create-draft-email          ← Softeria MS-365 MCP (draft compose)
+  ├── outlook-move-mail-message           ← Softeria MS-365 MCP (move to folder)
+  ├── outlook-*-attachment tools          ← Softeria MS-365 MCP (attachments)
+  └── ... (38 Outlook tools total)        ← All dynamically discovered
+
+Softeria MS-365 MCP (internal subprocess, stdio mode)
+  └── Handles MSGraph OAuth + API calls
+      (auto-upgrades via npx -y)
 ```
 
-### Current Connector Notes
+### Completed
 
-- Matrix/Beeper ingest uses `matrix-rust-sdk` as the primary transport and keeps the HTTP Matrix
-  path as an explicit `recover_http` recovery mode only.
-- Matrix sync state is persisted in `runtime_metadata` under `matrix_sync_checkpoint`, with
-  per-conversation high-water marks stored as `matrix_room_checkpoint` in `conversations.metadata`.
-- The API now supports real Matrix sends through an internal Matrix bridge service and protects
-  write/MCP access with `LIFE_RADAR_API_KEY` when configured.
-- Public MCP access is path-based via `https://liferadar.nothing.pink/mcp`; the MCP container is
-  intended to stay internal-only behind the API proxy.
-
-### TODO
-
-- [ ] Verify `openapi-to-mcp` compatibility with FastAPI 3.1 output
-- [ ] Create `mcp/` directory with MCP stdio server entrypoint
-- [ ] Bridge FastAPI HTTP responses → MCP JSON-RPC tool results
-- [ ] Add MCP config snippet to `~/.hermes/mcp_config.yaml`
-- [ ] Test end-to-end: Hermes → MCP → FastAPI → PostgreSQL
+- [x] Create `mcp-server/` with Starlette MCP server
+- [x] Bridge LifeRadar API responses → MCP tool results
+- [x] Dynamic Softeria tool discovery (all 37 mail tools + login-outlook)
+- [x] Outlook pass-through via subprocess stdio JSON-RPC
+- [x] Device code auth flow with token persistence
+- [x] Dockerfile.mcp with Node.js + Softeria pre-installed
+- [x] Deploy to oracle via Coolify
+- [x] End-to-end test: search, read, reply, send all verified
 
 ---
 

@@ -273,6 +273,38 @@ async fn main() -> Result<()> {
         );
         return Ok(());
     }
+    if cfg.mode == "key_import" {
+        let (client, _session) = build_client(&cfg).await?;
+        let import_outcome = maybe_import_room_keys(&cfg, &client).await?;
+        println!("key_import_status={}", import_outcome.status);
+        println!("key_import_detail={}", import_outcome.detail);
+        println!("imported_count={}", import_outcome.imported_count);
+        println!("total_count={}", import_outcome.total_count);
+
+        println!("\nsyncing to apply imported keys...");
+        client
+            .sync_once(SyncSettings::default().timeout(Duration::from_secs(cfg.timeout_seconds)))
+            .await
+            .context("sync_one failed after key import")?;
+
+        let sample = sample_recent_messages(&client).await;
+        println!("\n=== Decryption Verification ===");
+        println!("sampled_rooms={}", sample.sampled_rooms);
+        println!("sampled_events={}", sample.sampled_events);
+        println!("decrypted_text_events={}", sample.decrypted_text_events);
+        println!("decrypted_non_text_events={}", sample.decrypted_non_text_events);
+        println!("undecrypted_events={}", sample.undecrypted_events);
+        println!("plain_text_events={}", sample.plain_text_events);
+
+        if sample.decrypted_text_events > 0 {
+            println!("\n✅ SUCCESS: {} messages decrypted successfully", sample.decrypted_text_events);
+        } else if sample.undecrypted_events > 0 {
+            println!("\n❌ FAIL: {} events remain undecrypted after key import", sample.undecrypted_events);
+        } else {
+            println!("\n⚠️  WARN: no encrypted messages found in sampled rooms");
+        }
+        return Ok(());
+    }
 
     let result = match run_probe(&cfg).await {
         Ok(result) => result,
