@@ -1,10 +1,7 @@
-# DEPLOYMENT NOTES FOR COOLIFY
-# Public traffic terminates at liferadar.nothing.pink only.
-# MCP is exposed via the API proxy at /mcp, not a separate subdomain.
-# Required DNS:
-#   - liferadar.nothing.pink → server IP
-# Env vars with defaults are set in Coolify UI; no ${VAR:-default} syntax
-# (Coolify's parser can't handle bash default values in build-time.env)
+# Uses named volumes with driver_opts to avoid Coolify's replaceLocalSource()
+# rewriting host paths (see applicationParser in Coolify's parsers.php).
+# Bind mounts like /data/life-radar/identity:/app/identity get rewritten by
+# Coolify to its own managed path; named volumes with driver_opts do not.
 
 services:
   life-radar-api:
@@ -98,8 +95,8 @@ services:
     expose:
       - "8080"
     volumes:
-      - "${LIFE_RADAR_IDENTITY_DIR}:/app/identity"
-      - "${LIFE_RADAR_WORKSPACE_DIR}:/app/workspace"
+      - life-radar-identity:/app/identity
+      - life-radar-workspace:/app/workspace
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -117,6 +114,8 @@ services:
       LIFE_RADAR_DB_NAME: "${LIFE_RADAR_DB_NAME}"
       LIFE_RADAR_DB_USER: "${LIFE_RADAR_DB_USER}"
       LIFE_RADAR_DB_PASSWORD: "${LIFE_RADAR_DB_PASSWORD}"
+    volumes:
+      - life-radar-identity:/app/identity
     expose:
       - "8010"
     extra_hosts:
@@ -127,6 +126,18 @@ services:
 
 volumes:
   outlook-mcp-tokens:
+  life-radar-identity:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/life-radar/identity
+  life-radar-workspace:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/life-radar/workspace
 
 networks:
   coolify:

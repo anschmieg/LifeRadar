@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1.7
-
 FROM lukemathwalker/cargo-chef:latest-rust-1.88-bookworm AS cargo-chef
 
 WORKDIR /build
@@ -13,9 +11,7 @@ RUN cargo chef prepare --recipe-path /build/recipe.json --bin life-radar-matrix-
 
 FROM cargo-chef AS rust-build
 
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     pkg-config \
     libssl-dev \
@@ -26,16 +22,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 WORKDIR /build
 COPY --from=planner /build/recipe.json recipe.json
-RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,target=/build/target,sharing=locked \
-    cargo chef cook --release --recipe-path recipe.json --target-dir /build/target
+RUN cargo chef cook --release --recipe-path recipe.json --target-dir /build/target
 
 COPY matrix-rust-probe/ ./probe/
-RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,target=/build/target,sharing=locked \
-    cargo build --release --bin life-radar-matrix-rust-probe --manifest-path /build/probe/Cargo.toml --target-dir /build/target \
+RUN cargo build --release --bin life-radar-matrix-rust-probe --manifest-path /build/probe/Cargo.toml --target-dir /build/target \
     && cp /build/target/release/life-radar-matrix-rust-probe /build/life-radar-matrix-rust-probe
 
 RUN strip /build/life-radar-matrix-rust-probe 2>/dev/null || true
@@ -52,8 +42,7 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
 RUN python -m venv "$VIRTUAL_ENV"
 
 COPY api/requirements.bridge.txt .
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --no-compile -r requirements.bridge.txt
+RUN pip install --no-compile -r requirements.bridge.txt
 
 COPY api/matrix_bridge.py ./api/matrix_bridge.py
 
@@ -66,9 +55,7 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     VIRTUAL_ENV=/opt/venv \
     PATH=/opt/venv/bin:$PATH
 
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libsqlite3-0 \
     && rm -rf /var/lib/apt/lists/*
