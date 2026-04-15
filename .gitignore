@@ -68,3 +68,13 @@ matrix-rust-sdk-store/
 # Backups
 *.bak
 *.backup
+
+# Runtime state
+.local/state/
+.matrix-local-store/
+.matrix-session-fullsync.json
+.matrix-sync.json
+.playwright-mcp/
+data/
+1
+bin/backfill-from-beeper/
