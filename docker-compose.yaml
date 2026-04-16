@@ -159,7 +159,7 @@ services:
 
 volumes:
   # Default: ./data/* for local dev (relative to project dir)
-  # On Coolify: set DATA_DIR=/data/life-radar to use system paths
+  # On Coolify: set DATA_DIR=/data/liferadar to use system paths
   outlook-mcp-tokens:
     driver: local
     driver_opts:
