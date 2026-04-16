@@ -1,6 +1,8 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import QRCode from 'qrcode';
+
 import { BaseConnector } from './base.mjs';
 
 function requireEnv(name) {
@@ -13,40 +15,63 @@ function requireEnv(name) {
   return value;
 }
 
+function toBase64Url(buffer) {
+  return Buffer.from(buffer)
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
 export class TelegramConnector extends BaseConnector {
   constructor(opts) {
     super(opts);
     this.client = null;
     this.sessionFile = path.join(this.sessionDir, 'gramjs.session');
-    this.passwordHints = new Map();
+    this.codeHints = new Map();
+    this.qrClients = new Map();
   }
 
-  async beginLogin() {
+  async beginLogin(body = {}) {
     await this.ensureDirectories();
-    const attempt = this.createAttempt({
+    const mode = body.mode === 'code' ? 'code' : 'qr';
+    if (mode === 'qr') {
+      const attempt = this.createAttempt({
+        state: 'initializing',
+        prompt: 'Generating Telegram QR login…',
+        fields: [],
+        metadata: { qr_supported: true, mode },
+      });
+      await this.#ensureQrAttempt(attempt.attempt_id);
+      return this.getLoginAttempt(attempt.attempt_id);
+    }
+
+    return this.createAttempt({
       state: 'awaiting_phone',
-      prompt: 'Enter the phone number for the Telegram personal account.',
+      prompt: 'Enter the phone number for the Telegram account.',
       fields: ['phone_number'],
-      metadata: { qr_supported: false },
+      metadata: { qr_supported: true, mode },
     });
+  }
+
+  async getLoginAttempt(attemptId) {
+    const attempt = await super.getLoginAttempt(attemptId);
+    if (attempt.metadata?.mode === 'qr' && !['completed', 'failed', 'error'].includes(attempt.state)) {
+      return this.#pollQrAttempt(attemptId);
+    }
     return attempt;
   }
 
   async submitLoginStep(attemptId, body) {
-    const attempt = await this.getLoginAttempt(attemptId);
+    const attempt = await super.getLoginAttempt(attemptId);
+    if ((body.mode || attempt.metadata?.mode || 'qr') === 'qr') {
+      return this.getLoginAttempt(attemptId);
+    }
+
     const phoneNumber = body.phone_number || attempt.metadata.phone_number || null;
     const code = body.code || null;
-    const password = body.password || null;
-
-    const { TelegramClient } = await import('telegram');
-    const { StringSession } = await import('telegram/sessions/index.js');
-
-    const apiId = Number.parseInt(requireEnv('TELEGRAM_API_ID'), 10);
-    const apiHash = requireEnv('TELEGRAM_API_HASH');
-    const existingSession = await this.#readSession();
-    const session = new StringSession(existingSession);
-    this.client = new TelegramClient(session, apiId, apiHash, { connectionRetries: 5 });
-    await this.client.connect();
+    const client = await this.#createCodeClient();
+    const { SignIn } = await import('telegram/tl/functions/auth/index.js');
 
     if (attempt.state === 'awaiting_phone') {
       if (!phoneNumber) {
@@ -54,19 +79,19 @@ export class TelegramConnector extends BaseConnector {
         error.statusCode = 400;
         throw error;
       }
-      const sent = await this.client.sendCode(
-        { apiId, apiHash },
-        phoneNumber
-      );
-      this.passwordHints.set(attemptId, {
+      const apiId = Number.parseInt(requireEnv('TELEGRAM_API_ID'), 10);
+      const apiHash = requireEnv('TELEGRAM_API_HASH');
+      const sent = await client.sendCode({ apiId, apiHash }, phoneNumber);
+      this.codeHints.set(attemptId, {
         phone_number: phoneNumber,
         phone_code_hash: sent.phoneCodeHash,
       });
       return this.updateAttempt(attemptId, {
         state: 'awaiting_code',
-        prompt: 'Enter the Telegram login code.',
+        prompt: 'Enter the Telegram confirmation code.',
         fields: ['code'],
-        metadata: { ...attempt.metadata, phone_number: phoneNumber },
+        metadata: { ...attempt.metadata, phone_number: phoneNumber, mode: 'code' },
+        error: null,
       });
     }
 
@@ -76,10 +101,15 @@ export class TelegramConnector extends BaseConnector {
         error.statusCode = 400;
         throw error;
       }
-      const auth = this.passwordHints.get(attemptId);
+      const auth = this.codeHints.get(attemptId);
+      if (!auth) {
+        const error = new Error('Login code session expired. Start again.');
+        error.statusCode = 409;
+        throw error;
+      }
       try {
-        const result = await this.client.invoke(
-          new (await import('telegram/tl/functions/auth/index.js')).SignIn({
+        const result = await client.invoke(
+          new SignIn({
             phoneNumber: auth.phone_number,
             phoneCodeHash: auth.phone_code_hash,
             phoneCode: code,
@@ -91,47 +121,20 @@ export class TelegramConnector extends BaseConnector {
           prompt: null,
           fields: [],
           account_id: String(result.user?.id ?? this.defaultAccountId),
+          error: null,
         });
       } catch (error) {
-        if (String(error?.errorMessage || error?.message || '').includes('SESSION_PASSWORD_NEEDED')) {
+        const message = String(error?.errorMessage || error?.message || error);
+        if (message.includes('SESSION_PASSWORD_NEEDED')) {
           return this.updateAttempt(attemptId, {
-            state: 'awaiting_password',
-            prompt: 'Telegram requires the account password.',
-            fields: ['password'],
-            error: null,
+            state: 'error',
+            prompt: null,
+            fields: [],
+            error: 'This Telegram account requires 2FA for phone-code login. Use QR login instead.',
           });
         }
-        await this.db.upsertConnectorAccount({
-          provider: this.provider,
-          accountId: this.defaultAccountId,
-          authState: 'error',
-          lastError: error.message,
-          lastErrorAt: new Date(),
-          metadata: { phase: 'code' },
-        });
         throw error;
       }
-    }
-
-    if (attempt.state === 'awaiting_password') {
-      if (!password) {
-        const error = new Error('password is required');
-        error.statusCode = 400;
-        throw error;
-      }
-      const { CheckPassword } = await import('telegram/tl/functions/auth/index.js');
-      const { computeCheck } = await import('telegram/Password.js');
-      const passwordInfo = await this.client.getPassword();
-      const result = await this.client.invoke(
-        new CheckPassword({ password: await computeCheck(passwordInfo, password) })
-      );
-      await this.#finishAuthorization(result.user ?? null, attemptId);
-      return this.updateAttempt(attemptId, {
-        state: 'completed',
-        prompt: null,
-        fields: [],
-        account_id: String(result.user?.id ?? this.defaultAccountId),
-      });
     }
 
     return attempt;
@@ -152,7 +155,110 @@ export class TelegramConnector extends BaseConnector {
       await this.client.disconnect();
       this.client = null;
     }
+    for (const qrClient of this.qrClients.values()) {
+      try {
+        await qrClient.disconnect();
+      } catch {
+        // ignore cleanup errors
+      }
+    }
+    this.qrClients.clear();
+    this.codeHints.clear();
     return super.logout({ account_id: accountId || this.defaultAccountId });
+  }
+
+  async #createCodeClient() {
+    const { TelegramClient } = await import('telegram');
+    const { StringSession } = await import('telegram/sessions/index.js');
+    const apiId = Number.parseInt(requireEnv('TELEGRAM_API_ID'), 10);
+    const apiHash = requireEnv('TELEGRAM_API_HASH');
+    const client = new TelegramClient(new StringSession(''), apiId, apiHash, {
+      connectionRetries: 5,
+    });
+    await client.connect();
+    this.client = client;
+    return client;
+  }
+
+  async #ensureQrAttempt(attemptId) {
+    if (this.qrClients.has(attemptId)) return this.qrClients.get(attemptId);
+    const { TelegramClient, Api } = await import('telegram');
+    const { StringSession } = await import('telegram/sessions/index.js');
+    const apiId = Number.parseInt(requireEnv('TELEGRAM_API_ID'), 10);
+    const apiHash = requireEnv('TELEGRAM_API_HASH');
+    const client = new TelegramClient(new StringSession(''), apiId, apiHash, {
+      connectionRetries: 5,
+    });
+    await client.connect();
+    this.qrClients.set(attemptId, client);
+    await this.#refreshQrToken(attemptId, client, Api);
+    return client;
+  }
+
+  async #pollQrAttempt(attemptId) {
+    const attempt = await super.getLoginAttempt(attemptId);
+    const client = await this.#ensureQrAttempt(attemptId);
+    const { Api } = await import('telegram');
+    return this.#refreshQrToken(attemptId, client, Api);
+  }
+
+  async #refreshQrToken(attemptId, client, Api) {
+    const apiId = Number.parseInt(requireEnv('TELEGRAM_API_ID'), 10);
+    const apiHash = requireEnv('TELEGRAM_API_HASH');
+
+    let result = await client.invoke(
+      new Api.auth.ExportLoginToken({
+        apiId,
+        apiHash,
+        exceptIds: [],
+      })
+    );
+
+    if (result.className === 'auth.loginTokenMigrateTo') {
+      if (typeof client._switchDC === 'function') {
+        await client._switchDC(result.dcId);
+      }
+      result = await client.invoke(new Api.auth.ImportLoginToken({ token: result.token }));
+    }
+
+    if (result.className === 'auth.loginTokenSuccess') {
+      this.client = client;
+      await this.#finishAuthorization(result.authorization?.user ?? null, attemptId);
+      this.qrClients.delete(attemptId);
+      return this.updateAttempt(attemptId, {
+        state: 'completed',
+        prompt: null,
+        fields: [],
+        qr_text: null,
+        qr_svg: null,
+        account_id: String(result.authorization?.user?.id ?? this.defaultAccountId),
+        error: null,
+      });
+    }
+
+    if (result.className === 'auth.loginToken') {
+      const token = toBase64Url(result.token);
+      const qrText = `tg://login?token=${token}`;
+      const qrSvg = await QRCode.toString(qrText, { type: 'svg', margin: 1 });
+      return this.updateAttempt(attemptId, {
+        state: 'awaiting_qr_scan',
+        prompt: 'Scan this QR code in Telegram: Settings → Devices → Link Desktop Device.',
+        fields: [],
+        qr_text: qrText,
+        qr_svg: qrSvg,
+        metadata: {
+          ...(this.attempts.get(attemptId)?.metadata || {}),
+          mode: 'qr',
+          qr_supported: true,
+        },
+        error: null,
+      });
+    }
+
+    return this.updateAttempt(attemptId, {
+      state: 'error',
+      error: 'Could not generate Telegram QR login token.',
+    });
   }
 
   async #ensureAuthorizedClient() {
@@ -196,7 +302,7 @@ export class TelegramConnector extends BaseConnector {
       },
     });
     await this.#backfill(accountId);
-    this.passwordHints.delete(attemptId);
+    this.codeHints.delete(attemptId);
   }
 
   async #backfill(accountId) {

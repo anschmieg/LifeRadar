@@ -227,7 +227,7 @@ async def run_direct_connector_send(provider: str, external_id: str, content_tex
 
 def _connector_auth_page(provider: str, api_key: str) -> str:
     safe_provider = provider.lower()
-    submit_mode = "poll" if safe_provider == "whatsapp" else "submit"
+    submit_mode = "poll" if safe_provider in {"whatsapp", "telegram"} else "submit"
     title = provider.title()
     return f"""<!doctype html>
 <html lang="en">
@@ -294,7 +294,7 @@ def _connector_auth_page(provider: str, api_key: str) -> str:
       <div class="badge">LifeRadar Connector</div>
       <h1>{title} Login</h1>
       <p class="muted">
-        {"Link your account by scanning a QR code, just like the normal web client flow." if safe_provider == "whatsapp" else "Link your Telegram account in a guided login flow. If QR login is available later, it will appear here automatically."}
+        {"Link your account by scanning a QR code, just like the normal web client flow." if safe_provider == "whatsapp" else "Link your Telegram account using QR by default, with a phone-and-code fallback if you prefer."}
       </p>
       <ul class="steps" id="steps">
         <li id="step-start" class="active">Start</li>
@@ -305,7 +305,7 @@ def _connector_auth_page(provider: str, api_key: str) -> str:
     <div class="card">
       <h2>{title}</h2>
       <div class="hint" id="summary">
-        {"Open the pair screen and scan the QR code with your phone." if safe_provider == "whatsapp" else "Start login, then follow the phone, code, and password prompts only if needed."}
+        {"Open the pair screen and scan the QR code with your phone." if safe_provider == "whatsapp" else "Start with QR. If you want, you can switch to a phone-and-code login instead."}
       </div>
     </div>
   </section>
@@ -313,6 +313,7 @@ def _connector_auth_page(provider: str, api_key: str) -> str:
   <section class="stack">
     <div class="actions">
       <button id="start">Start Login</button>
+      {"<button id='useCode' class='secondary'>Use Phone + Code Instead</button>" if safe_provider == "telegram" else ""}
       <button id="refresh" class="secondary hidden">Refresh Status</button>
     </div>
 
@@ -328,19 +329,15 @@ def _connector_auth_page(provider: str, api_key: str) -> str:
           <label for="code">Verification code</label>
           <input id="code" placeholder="Telegram login code" inputmode="numeric" />
         </div>
-        <div class="field hidden" id="field-password">
-          <label for="password">2FA password</label>
-          <input id="password" placeholder="Telegram password" type="password" />
-        </div>
         <div class="actions">
           <button id="submit">Continue</button>
         </div>
       </div>
 
-      <div id="whatsapp-panel" class="card hidden stack">
+      <div id="qr-panel" class="card hidden stack">
         <div class="qr-wrap">
           <div id="qr"></div>
-          <div class="hint">On your phone: <span class="mono">WhatsApp → Settings → Linked Devices → Link a Device</span></div>
+          <div class="hint" id="qrHint">{'On your phone: <span class="mono">WhatsApp → Settings → Linked Devices → Link a Device</span>' if safe_provider == 'whatsapp' else 'On your phone: <span class="mono">Telegram → Settings → Devices → Link Desktop Device</span>'}</div>
         </div>
       </div>
 
@@ -356,6 +353,7 @@ const provider = {json.dumps(safe_provider)};
 const apiKey = {json.dumps(api_key)};
 let attemptId = null;
 let pollTimer = null;
+let telegramMode = "qr";
 
 async function api(path, options={{}}) {{
   const headers = Object.assign({{"Content-Type":"application/json"}}, options.headers || {{}});
@@ -404,13 +402,13 @@ function renderAttempt(data) {{
   setStep(data.state);
 
   const isWhatsapp = provider === "whatsapp";
-  document.getElementById("whatsapp-panel").classList.toggle("hidden", !isWhatsapp);
-  document.getElementById("telegram-fields").classList.toggle("hidden", isWhatsapp || data.state === "completed");
+  const isTelegramQr = provider === "telegram" && (data.metadata?.mode || telegramMode) === "qr";
+  document.getElementById("qr-panel").classList.toggle("hidden", !(isWhatsapp || isTelegramQr) || data.state === "completed");
+  document.getElementById("telegram-fields").classList.toggle("hidden", provider !== "telegram" || isTelegramQr || data.state === "completed");
   document.getElementById("qr").innerHTML = data.qr_svg || "";
 
   toggleField("field-phone", data.state === "awaiting_phone");
   toggleField("field-code", data.state === "awaiting_code");
-  toggleField("field-password", data.state === "awaiting_password");
 
   if (data.state === "completed") {{
     setStatus("success", "Connected successfully. LifeRadar is now syncing this account.");
@@ -430,10 +428,6 @@ function renderAttempt(data) {{
   }}
   if (data.state === "awaiting_code") {{
     setStatus("info", "Enter the verification code that was sent to Telegram.");
-    return;
-  }}
-  if (data.state === "awaiting_password") {{
-    setStatus("info", "Enter your Telegram 2FA password to complete login.");
     return;
   }}
   setStatus("info", data.prompt || "Waiting for the next step.");
@@ -464,7 +458,7 @@ document.getElementById("start").onclick = async () => {{
   const button = document.getElementById("start");
   button.disabled = true;
   try {{
-    const data = await api(`/connectors/${{provider}}/login`, {{ method:"POST", body: JSON.stringify({{force:false}}) }});
+    const data = await api(`/connectors/${{provider}}/login`, {{ method:"POST", body: JSON.stringify({{force:false, mode: provider === "telegram" ? telegramMode : undefined}}) }});
     attemptId = data.attempt_id;
     renderAttempt(data);
     if ({json.dumps(submit_mode)} === "poll" || data.state === "initializing" || data.state === "awaiting_qr_scan") poll();
@@ -479,9 +473,9 @@ document.getElementById("submit").onclick = async () => {{
   const button = document.getElementById("submit");
   button.disabled = true;
   const body = {{
+    mode: provider === "telegram" ? telegramMode : undefined,
     phone_number: document.getElementById("phone_number").value || undefined,
-    code: document.getElementById("code").value || undefined,
-    password: document.getElementById("password").value || undefined
+    code: document.getElementById("code").value || undefined
   }};
   try {{
     const data = await api(`/connectors/${{provider}}/login/${{attemptId}}/submit`, {{ method:"POST", body: JSON.stringify(body) }});
@@ -497,6 +491,19 @@ document.getElementById("refresh").onclick = async () => {{
   if (pollTimer) clearTimeout(pollTimer);
   await poll();
 }};
+const useCode = document.getElementById("useCode");
+if (useCode) {{
+  useCode.onclick = () => {{
+    telegramMode = "code";
+    document.getElementById("attempt").classList.remove("hidden");
+    document.getElementById("telegram-fields").classList.remove("hidden");
+    document.getElementById("qr-panel").classList.add("hidden");
+    toggleField("field-phone", true);
+    toggleField("field-code", false);
+    setStatus("info", "Phone-and-code login selected. If Telegram requires 2FA, use QR login instead.");
+    document.getElementById("summary").textContent = "Enter your phone number and then the Telegram confirmation code.";
+  }};
+}}
 </script>
 </body>
 </html>"""

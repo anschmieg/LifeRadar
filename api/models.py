@@ -279,12 +279,13 @@ class ConnectorStatus(BaseModel):
 
 class ConnectorLoginStartRequest(BaseModel):
     force: bool = False
+    mode: Optional[str] = None
 
 
 class ConnectorLoginStepRequest(BaseModel):
+    mode: Optional[str] = None
     phone_number: Optional[str] = None
     code: Optional[str] = None
-    password: Optional[str] = None
 
 
 class ConnectorLoginAttempt(BaseModel):
