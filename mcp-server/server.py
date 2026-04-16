@@ -14,7 +14,7 @@ from mcp.types import Tool, TextContent
 # ASGI framework
 from starlette.applications import Starlette
 from starlette.routing import Route
-from starlette.responses import JSONResponse, StreamingResponse
+from starlette.responses import JSONResponse
 from starlette.requests import Request
 import hypercorn.config
 from hypercorn.asyncio import serve
@@ -26,6 +26,7 @@ LIFE_RADAR_API_URL = os.environ.get(
     "http://host.docker.internal:8000"
 )
 LIFE_RADAR_PUBLIC_API_URL = os.environ.get("LIFE_RADAR_PUBLIC_API_URL", "").strip()
+LIFE_RADAR_API_KEY = os.environ.get("LIFE_RADAR_API_KEY", "").strip()
 
 APP_NAME = "liferadar-mcp"
 VERSION = "1.0.0"
@@ -172,7 +173,8 @@ def _normalize_api_response(data: Any) -> list[dict]:
 
 async def _get_json(url: str, params: dict | None = None) -> list[dict]:
     async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.get(url, params=params or {})
+        headers = {"x-api-key": LIFE_RADAR_API_KEY} if LIFE_RADAR_API_KEY else {}
+        response = await client.get(url, params=params or {}, headers=headers)
         response.raise_for_status()
         return _normalize_api_response(response.json())
 
@@ -213,7 +215,8 @@ async def call_api_post(path: str, body: dict | None = None) -> list[dict]:
     url = f"{LIFE_RADAR_API_URL.rstrip('/')}/{path.lstrip('/')}"
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
-            response = await client.post(url, json=body or {})
+            headers = {"x-api-key": LIFE_RADAR_API_KEY} if LIFE_RADAR_API_KEY else {}
+            response = await client.post(url, json=body or {}, headers=headers)
             response.raise_for_status()
             data = response.json()
             if isinstance(data, list):
@@ -335,7 +338,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="send-message",
-            description="Send a message in a Matrix/Outlook conversation. Requires user approval. Returns a message_id.",
+            description="Send a message in a direct chat conversation (Telegram, WhatsApp, or Matrix when explicitly re-enabled). Requires user approval. Returns a message_id.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -393,6 +396,44 @@ async def list_tools() -> list[Tool]:
                     },
                 },
             },
+        ),
+        Tool(
+            name="connector-status",
+            description="List direct connector status for Telegram and WhatsApp, including active accounts and auth state.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="login-telegram",
+            description="Start or continue Telegram personal-account login. Returns attempt state; use auth_url or provide phone/code/password in follow-up calls.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "attempt_id": {"type": "string", "description": "Existing login attempt ID to continue"},
+                    "phone_number": {"type": "string", "description": "Phone number for the first Telegram login step"},
+                    "code": {"type": "string", "description": "Verification code received from Telegram"},
+                    "password": {"type": "string", "description": "Optional 2FA password if Telegram requests it"},
+                },
+            },
+        ),
+        Tool(
+            name="login-whatsapp",
+            description="Start or resume WhatsApp QR login. Returns an attempt state plus QR SVG/text when pairing is required.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "attempt_id": {"type": "string", "description": "Existing login attempt ID to poll"},
+                },
+            },
+        ),
+        Tool(
+            name="logout-telegram",
+            description="Log out the Telegram connector and clear persisted session state.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="logout-whatsapp",
+            description="Log out the WhatsApp connector and clear persisted session state.",
+            inputSchema={"type": "object", "properties": {}},
         ),
         Tool(
             name="health",
@@ -462,6 +503,24 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             if params.get("force"):
                 login_args["force"] = True
             result = await call_outlook_mcp("login", login_args)
+        case "connector-status":
+            result = await call_api("connectors")
+        case "login-telegram":
+            attempt_id = params.pop("attempt_id", None)
+            if attempt_id:
+                result = await call_api_post(f"connectors/telegram/login/{attempt_id}/submit", params)
+            else:
+                result = await call_api_post("connectors/telegram/login", {"force": False})
+        case "login-whatsapp":
+            attempt_id = params.pop("attempt_id", None)
+            if attempt_id:
+                result = await call_api(f"connectors/whatsapp/login/{attempt_id}")
+            else:
+                result = await call_api_post("connectors/whatsapp/login", {"force": False})
+        case "logout-telegram":
+            result = await call_api_post("connectors/telegram/logout", {})
+        case "logout-whatsapp":
+            result = await call_api_post("connectors/whatsapp/logout", {})
         case _:
             # Dynamic Outlook tool pass-through
             if name.startswith("outlook-"):
@@ -629,8 +688,8 @@ if __name__ == "__main__":
     config = hypercorn.config.Config()
     config.bind = ["0.0.0.0:8090"]
     
-    print(f"[liferadar] Starting MCP server on :8090")
-    print(f"[liferadar] MCP endpoint: POST /")
-    print(f"[liferadar] Health endpoint: /health")
+    print("[liferadar] Starting MCP server on :8090")
+    print("[liferadar] MCP endpoint: POST /")
+    print("[liferadar] Health endpoint: /health")
     
     asyncio.run(serve(app, config))

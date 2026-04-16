@@ -9,6 +9,30 @@ CREATE TABLE IF NOT EXISTS life_radar.runtime_metadata (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS life_radar.connector_accounts (
+  provider TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  display_label TEXT,
+  auth_state TEXT NOT NULL DEFAULT 'logged_out',
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  last_synced_at TIMESTAMPTZ,
+  last_error_at TIMESTAMPTZ,
+  last_error TEXT,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (provider, account_id)
+);
+
+CREATE TABLE IF NOT EXISTS life_radar.connector_sync_checkpoints (
+  provider TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  checkpoint_key TEXT NOT NULL,
+  checkpoint_value JSONB NOT NULL DEFAULT '{}'::jsonb,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (provider, account_id, checkpoint_key)
+);
+
 CREATE TABLE IF NOT EXISTS life_radar.conversations (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   source TEXT NOT NULL,
@@ -256,3 +280,4 @@ CREATE INDEX IF NOT EXISTS idx_graph_edges_to ON life_radar.graph_edges (to_type
 CREATE INDEX IF NOT EXISTS idx_runtime_probes_candidate_observed ON life_radar.runtime_probes (candidate_id, observed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_embeddings_lookup ON life_radar.embeddings (entity_type, entity_id);
 CREATE INDEX IF NOT EXISTS idx_embeddings_vector_cosine ON life_radar.embeddings USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS idx_connector_accounts_provider_state ON life_radar.connector_accounts (provider, auth_state, enabled);

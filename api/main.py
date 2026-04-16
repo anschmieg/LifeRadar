@@ -17,8 +17,7 @@ from fastapi import FastAPI, Query, HTTPException, Request, status
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, JSONResponse
-from starlette.requests import Request as StarletteRequest
+from fastapi.responses import Response, JSONResponse, HTMLResponse
 from pydantic import BaseModel, ValidationError
 from pydantic_core import PydanticUndefined
 
@@ -34,6 +33,11 @@ from api.models import (
     CalendarEventUpsert,
     MessageSendRequest,
     MessageSendResponse,
+    ConnectorStatus,
+    ConnectorLoginStartRequest,
+    ConnectorLoginStepRequest,
+    ConnectorLoginAttempt,
+    ConnectorLogoutResponse,
     MemoryRecord,
     RuntimeProbe,
     MessagingCandidate,
@@ -71,6 +75,10 @@ MCP_URL = os.environ.get("LIFE_RADAR_MCP_URL", "http://liferadar-mcp:8090")
 MATRIX_BRIDGE_URL = os.environ.get(
     "LIFE_RADAR_MATRIX_BRIDGE_URL", "http://life-radar-matrix-bridge:8010"
 )
+CHAT_GATEWAY_URL = os.environ.get(
+    "LIFE_RADAR_CHAT_GATEWAY_URL", "http://life-radar-chat-gateway:8020"
+)
+BEEPER_ENABLED = os.environ.get("LIFE_RADAR_BEEPER_ENABLED", "false").lower() == "true"
 
 logger = logging.getLogger(__name__)
 
@@ -119,18 +127,23 @@ def _expected_api_key() -> str:
     return os.environ.get("LIFE_RADAR_API_KEY", "").strip()
 
 
-def _provided_api_key(request: Request) -> str:
+def _provided_api_key(request: Request, allow_query_param: bool = False) -> str:
     bearer = request.headers.get("authorization", "")
     if bearer.lower().startswith("bearer "):
         return bearer[7:].strip()
-    return request.headers.get("x-api-key", "").strip()
+    provided = request.headers.get("x-api-key", "").strip()
+    if provided:
+        return provided
+    if allow_query_param:
+        return request.query_params.get("api_key", "").strip()
+    return ""
 
 
-def require_api_key(request: Request) -> None:
+def require_api_key(request: Request, allow_query_param: bool = False) -> None:
     expected = _expected_api_key()
     if not expected:
         return
-    provided = _provided_api_key(request)
+    provided = _provided_api_key(request, allow_query_param=allow_query_param)
     if not provided or not secrets.compare_digest(provided, expected):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -173,11 +186,139 @@ async def run_matrix_send(room_id: str, content_text: str) -> str:
     return str(event_id)
 
 
+async def call_chat_gateway(method: str, path: str, payload: Optional[dict] = None) -> dict | list:
+    try:
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            response = await client.request(
+                method=method,
+                url=f"{CHAT_GATEWAY_URL.rstrip('/')}{path}",
+                json=payload,
+            )
+    except httpx.ConnectError as exc:
+        raise HTTPException(status_code=503, detail="Chat gateway is unavailable") from exc
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail="Chat gateway timed out") from exc
+
+    if response.status_code >= 400:
+        detail = response.text[:400]
+        raise HTTPException(status_code=response.status_code, detail=detail or "Chat gateway error")
+
+    if not response.content:
+        return {}
+    return response.json()
+
+
+async def run_direct_connector_send(provider: str, external_id: str, content_text: str, conversation_id: UUID) -> str:
+    payload = await call_chat_gateway(
+        "POST",
+        "/internal/send",
+        {
+            "provider": provider,
+            "external_id": external_id,
+            "content_text": content_text,
+            "conversation_id": str(conversation_id),
+        },
+    )
+    message_id = payload.get("message_id")
+    if not message_id:
+        raise HTTPException(status_code=502, detail=f"{provider} gateway did not return a message_id")
+    return str(message_id)
+
+
+def _connector_auth_page(provider: str, api_key: str) -> str:
+    safe_provider = provider.lower()
+    submit_mode = "poll" if safe_provider == "whatsapp" else "submit"
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LifeRadar {provider.title()} Login</title>
+  <style>
+    :root {{ color-scheme: light; --bg:#f4f1ea; --panel:#fffaf2; --text:#1f1b16; --accent:#0f766e; --muted:#6b6257; --border:#ddd3c3; }}
+    body {{ margin:0; font-family: ui-sans-serif, system-ui, sans-serif; background: radial-gradient(circle at top, #fff8ed, var(--bg)); color:var(--text); }}
+    main {{ max-width:720px; margin:48px auto; background:var(--panel); border:1px solid var(--border); border-radius:24px; padding:28px; box-shadow:0 16px 40px rgba(31,27,22,.08); }}
+    h1 {{ margin-top:0; }}
+    .muted {{ color:var(--muted); }}
+    .hidden {{ display:none; }}
+    input {{ width:100%; padding:12px 14px; margin:8px 0 12px; border-radius:12px; border:1px solid var(--border); font-size:16px; }}
+    button {{ background:var(--accent); color:white; border:none; border-radius:999px; padding:12px 18px; cursor:pointer; font-size:15px; }}
+    pre {{ white-space:pre-wrap; background:#f8f5ef; padding:12px; border-radius:14px; border:1px solid var(--border); }}
+    #qr svg {{ width:100%; max-width:320px; height:auto; }}
+  </style>
+</head>
+<body>
+<main>
+  <h1>{provider.title()} Login</h1>
+  <p class="muted">This page drives the connector auth flow through the internal chat gateway.</p>
+  <button id="start">Start Login</button>
+  <div id="attempt" class="hidden">
+    <p id="prompt"></p>
+    <div id="telegram-fields" class="hidden">
+      <input id="phone_number" placeholder="Phone number" />
+      <input id="code" placeholder="Verification code" />
+      <input id="password" placeholder="Password" type="password" />
+      <button id="submit">Continue</button>
+    </div>
+    <div id="qr" class="hidden"></div>
+    <pre id="status"></pre>
+  </div>
+</main>
+<script>
+const provider = {json.dumps(safe_provider)};
+const apiKey = {json.dumps(api_key)};
+let attemptId = null;
+async function api(path, options={{}}) {{
+  const headers = Object.assign({{"Content-Type":"application/json"}}, options.headers || {{}});
+  if (apiKey) headers["X-API-Key"] = apiKey;
+  const response = await fetch(path, Object.assign({{}}, options, {{ headers }}));
+  const text = await response.text();
+  const data = text ? JSON.parse(text) : {{}};
+  if (!response.ok) throw new Error(data.detail || data.error || text || "Request failed");
+  return data;
+}}
+function renderAttempt(data) {{
+  document.getElementById("attempt").classList.remove("hidden");
+  document.getElementById("prompt").textContent = data.prompt || data.state;
+  document.getElementById("status").textContent = JSON.stringify(data, null, 2);
+  const fieldsBox = document.getElementById("telegram-fields");
+  const qrBox = document.getElementById("qr");
+  fieldsBox.classList.toggle("hidden", provider === "whatsapp");
+  qrBox.classList.toggle("hidden", !data.qr_svg);
+  qrBox.innerHTML = data.qr_svg || "";
+}}
+async function poll() {{
+  if (!attemptId) return;
+  const data = await api(`/connectors/${{provider}}/login/${{attemptId}}`);
+  renderAttempt(data);
+  if (!["completed","failed","error"].includes(data.state)) {{
+    setTimeout(poll, 3000);
+  }}
+}}
+document.getElementById("start").onclick = async () => {{
+  const data = await api(`/connectors/${{provider}}/login`, {{ method:"POST", body: JSON.stringify({{force:false}}) }});
+  attemptId = data.attempt_id;
+  renderAttempt(data);
+  if ({json.dumps(submit_mode)} === "poll") poll();
+}};
+document.getElementById("submit").onclick = async () => {{
+  if (!attemptId) return;
+  const body = {{
+    phone_number: document.getElementById("phone_number").value || undefined,
+    code: document.getElementById("code").value || undefined,
+    password: document.getElementById("password").value || undefined
+  }};
+  const data = await api(`/connectors/${{provider}}/login/${{attemptId}}/submit`, {{ method:"POST", body: JSON.stringify(body) }});
+  renderAttempt(data);
+  if (!["completed","failed","error"].includes(data.state)) poll();
+}};
+</script>
+</body>
+</html>"""
+
+
 # --- MCP proxy (Streamable HTTP) ---
-@app.api_route("/mcp/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-@app.api_route("/mcp", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-async def proxy_to_mcp(request: Request, path: str = ""):
-    """Proxy MCP requests to the MCP server container."""
+async def _proxy_to_mcp_impl(request: Request, path: str = ""):
     require_api_key(request)
     target_url = f"{MCP_URL}/{path}" if path else f"{MCP_URL}/"
     headers = dict(request.headers)
@@ -202,6 +343,18 @@ async def proxy_to_mcp(request: Request, path: str = ""):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+@app.api_route("/mcp", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_to_mcp_root(request: Request):
+    """Proxy MCP root requests to the MCP server container."""
+    return await _proxy_to_mcp_impl(request)
+
+
+@app.api_route("/mcp/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_to_mcp_path(request: Request, path: str):
+    """Proxy MCP path requests to the MCP server container."""
+    return await _proxy_to_mcp_impl(request, path)
+
+
 # --- /health ---
 @app.get("/health", response_model=HealthResponse)
 async def health():
@@ -212,6 +365,77 @@ async def health():
         return HealthResponse(status="ok", database="connected")
     except Exception as e:
         return HealthResponse(status="degraded", database=f"error: {e}")
+
+
+@app.get("/connectors", response_model=list[ConnectorStatus])
+async def list_connectors(request: Request):
+    require_api_key(request)
+    payload = await call_chat_gateway("GET", "/internal/connectors")
+    return payload
+
+
+@app.post("/connectors/{provider}/login", response_model=ConnectorLoginAttempt)
+async def start_connector_login(
+    provider: str,
+    body: ConnectorLoginStartRequest,
+    request: Request,
+):
+    require_api_key(request)
+    payload = await call_chat_gateway(
+        "POST",
+        f"/internal/connectors/{provider}/login",
+        body.model_dump(),
+    )
+    return payload
+
+
+@app.get("/connectors/{provider}/login/{attempt_id}", response_model=ConnectorLoginAttempt)
+async def connector_login_status(provider: str, attempt_id: str, request: Request):
+    require_api_key(request)
+    payload = await call_chat_gateway(
+        "GET",
+        f"/internal/connectors/{provider}/login/{attempt_id}",
+    )
+    return payload
+
+
+@app.post("/connectors/{provider}/login/{attempt_id}/submit", response_model=ConnectorLoginAttempt)
+async def submit_connector_login(
+    provider: str,
+    attempt_id: str,
+    body: ConnectorLoginStepRequest,
+    request: Request,
+):
+    require_api_key(request)
+    payload = await call_chat_gateway(
+        "POST",
+        f"/internal/connectors/{provider}/login/{attempt_id}/submit",
+        body.model_dump(exclude_none=True),
+    )
+    return payload
+
+
+@app.post("/connectors/{provider}/logout", response_model=ConnectorLogoutResponse)
+async def connector_logout(provider: str, request: Request):
+    require_api_key(request)
+    payload = await call_chat_gateway(
+        "POST",
+        f"/internal/connectors/{provider}/logout",
+        {},
+    )
+    return payload
+
+
+@app.get("/auth/telegram", response_class=HTMLResponse)
+async def telegram_auth_page(request: Request):
+    require_api_key(request, allow_query_param=True)
+    return HTMLResponse(_connector_auth_page("telegram", _provided_api_key(request, True)))
+
+
+@app.get("/auth/whatsapp", response_class=HTMLResponse)
+async def whatsapp_auth_page(request: Request):
+    require_api_key(request, allow_query_param=True)
+    return HTMLResponse(_connector_auth_page("whatsapp", _provided_api_key(request, True)))
 
 
 @app.get("/openapi.json")
@@ -410,7 +634,7 @@ async def get_messages(
             params.append(source)
             idx += 1
 
-        where = f" AND ".join(conditions) if conditions else "1=1"
+        where = " AND ".join(conditions) if conditions else "1=1"
         query = f"""
             SELECT
                 id,
@@ -652,13 +876,27 @@ async def upsert_calendar_event(event: CalendarEventUpsert, request: Request):
 @app.post("/messages/send", response_model=MessageSendResponse)
 async def send_message(request: MessageSendRequest, http_request: Request):
     """
-    Send a message via Matrix/Outlook (user-approved only).
+    Send a message via an active connector (user-approved only).
     """
     require_api_key(http_request)
     conversation = await load_conversation_for_send(request.conversation_id)
 
     if conversation["source"] == "matrix":
+        if not BEEPER_ENABLED:
+            raise HTTPException(
+                status_code=501,
+                detail="Sending messages for source 'matrix' is disabled while Beeper integration is off",
+            )
         message_id = await run_matrix_send(conversation["external_id"], request.content_text)
+        return MessageSendResponse(status="sent", message_id=message_id)
+
+    if conversation["source"] in {"telegram", "whatsapp"}:
+        message_id = await run_direct_connector_send(
+            conversation["source"],
+            conversation["external_id"],
+            request.content_text,
+            request.conversation_id,
+        )
         return MessageSendResponse(status="sent", message_id=message_id)
 
     raise HTTPException(

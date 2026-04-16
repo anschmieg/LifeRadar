@@ -2,7 +2,7 @@
 
 Personal intelligence and communications triage system.
 
-Ingests messages from Matrix/Beeper, Microsoft Graph (Outlook), and Google Calendar into
+Ingests messages from Telegram, WhatsApp, Matrix/Beeper legacy data, Microsoft Graph (Outlook), and Google Calendar into
 PostgreSQL/pgvector, then exposes everything via an MCP API for Hermes Agent.
 
 **Status:** Phase 1 complete. See SPEC.md for full roadmap.
@@ -24,19 +24,22 @@ separate MCP subdomain.
 ## Architecture
 
 - **life-radar-worker** — probe pipeline running every 5 minutes
-- **life-radar-db** — pgvector:pg17 with 15 tables
+- **life-radar-db** — pgvector:pg17 with connector state tables
 - **life-radar-api** (Phase 2) — FastAPI HTTP API
+- **life-radar-chat-gateway** — direct Telegram/WhatsApp auth, sync, and send runtime
 - **life-radar-matrix-bridge** — internal Matrix send bridge
 - **MCP server** (Phase 3) — OpenAPI-generated MCP tools for Hermes
 
 ## Connector Notes
 
-- Matrix/Beeper uses `matrix-rust-sdk` as the primary E2EE transport.
+- Telegram uses a direct personal-account connector with browser-assisted login.
+- WhatsApp uses a persistent consumer multi-device session with QR login.
+- Matrix/Beeper is preserved as a legacy connector and is disabled by default via `LIFE_RADAR_BEEPER_ENABLED=false`.
 - Matrix sync now persists a global `matrix_sync_checkpoint` plus per-conversation
   `matrix_room_checkpoint` metadata to avoid re-walking full history each cycle.
 - The raw HTTP Matrix path is retained as an explicit recovery mode, not the normal ingest path.
-- `POST /messages/send` performs a real Matrix send for `source='matrix'` by calling the internal
-  Matrix bridge service; other sources currently return `501 Not Implemented`.
+- `POST /messages/send` performs direct sends for `source='telegram'` and `source='whatsapp'`.
+- Matrix send remains available only when the Beeper integration is explicitly re-enabled.
 
 ## Phases
 

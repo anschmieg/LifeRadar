@@ -31,7 +31,12 @@ class LifeRadarApiTests(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
         self.env_patcher = patch.dict(
-            os.environ, {"LIFE_RADAR_API_KEY": "secret-key"}, clear=False
+            os.environ,
+            {
+                "LIFE_RADAR_API_KEY": "secret-key",
+                "LIFE_RADAR_BEEPER_ENABLED": "false",
+            },
+            clear=False,
         )
         self.env_patcher.start()
 
@@ -85,8 +90,10 @@ class LifeRadarApiTests(unittest.TestCase):
         self.assertEqual(schema_response.status_code, 200)
         self.assertEqual(schema_response.json()["info"]["title"], "LifeRadar API")
 
-    def test_send_message_uses_matrix_binary_for_matrix_conversations(self):
-        with patch(
+    def test_send_message_uses_matrix_binary_for_matrix_conversations_when_enabled(self):
+        with patch.dict(os.environ, {"LIFE_RADAR_BEEPER_ENABLED": "true"}, clear=False), patch(
+            "api.main.BEEPER_ENABLED", True
+        ), patch(
             "api.main.load_conversation_for_send",
             new=AsyncMock(return_value={"source": "matrix", "external_id": "!room:example.com"}),
         ), patch("api.main.run_matrix_send", new=AsyncMock(return_value="$event123")):
@@ -104,6 +111,44 @@ class LifeRadarApiTests(unittest.TestCase):
             response.json(), {"status": "sent", "message_id": "$event123"}
         )
 
+    def test_send_message_rejects_matrix_when_beeper_disabled(self):
+        with patch(
+            "api.main.load_conversation_for_send",
+            new=AsyncMock(return_value={"source": "matrix", "external_id": "abc"}),
+        ):
+            response = self.client.post(
+                "/messages/send",
+                headers=self.auth_headers(),
+                json={
+                    "conversation_id": "11111111-1111-1111-1111-111111111111",
+                    "content_text": "hello from test",
+                },
+            )
+
+        self.assertEqual(response.status_code, 501)
+        self.assertIn("disabled", response.json()["detail"])
+
+    def test_send_message_uses_chat_gateway_for_direct_connectors(self):
+        with patch(
+            "api.main.load_conversation_for_send",
+            new=AsyncMock(return_value={"source": "telegram", "external_id": "12345"}),
+        ), patch(
+            "api.main.run_direct_connector_send",
+            new=AsyncMock(return_value="12345:99"),
+        ) as send_mock:
+            response = self.client.post(
+                "/messages/send",
+                headers=self.auth_headers(),
+                json={
+                    "conversation_id": "11111111-1111-1111-1111-111111111111",
+                    "content_text": "hello from test",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "sent", "message_id": "12345:99"})
+        send_mock.assert_awaited_once()
+
     def test_send_message_rejects_unsupported_sources(self):
         with patch(
             "api.main.load_conversation_for_send",
@@ -120,6 +165,21 @@ class LifeRadarApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 501)
         self.assertIn("not implemented", response.json()["detail"])
+
+    def test_connector_routes_proxy_to_chat_gateway(self):
+        gateway_payload = [{"provider": "telegram", "enabled": True, "accounts": []}]
+        with patch("api.main.call_chat_gateway", new=AsyncMock(return_value=gateway_payload)):
+            response = self.client.get("/connectors", headers=self.auth_headers())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), gateway_payload)
+
+    def test_auth_pages_support_api_key_query_param(self):
+        response = self.client.get("/auth/telegram?api_key=secret-key")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Telegram Login", response.text)
+        self.assertIn('/connectors/${provider}/login', response.text)
 
     def test_get_tasks_without_status_uses_limit_only(self):
         connection = AsyncMock()

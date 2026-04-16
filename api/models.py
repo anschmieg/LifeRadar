@@ -259,6 +259,55 @@ class MessageSendResponse(BaseModel):
     message_id: str
 
 
+class ConnectorAccount(TimestampedModel):
+    provider: str
+    account_id: str
+    display_label: Optional[str] = None
+    auth_state: str = "logged_out"
+    enabled: bool = True
+    last_synced_at: Optional[datetime] = None
+    last_error_at: Optional[datetime] = None
+    last_error: Optional[str] = None
+    metadata: dict = Field(default_factory=dict)
+
+
+class ConnectorStatus(BaseModel):
+    provider: str
+    enabled: bool = True
+    accounts: list[ConnectorAccount] = Field(default_factory=list)
+
+
+class ConnectorLoginStartRequest(BaseModel):
+    force: bool = False
+
+
+class ConnectorLoginStepRequest(BaseModel):
+    phone_number: Optional[str] = None
+    code: Optional[str] = None
+    password: Optional[str] = None
+
+
+class ConnectorLoginAttempt(BaseModel):
+    attempt_id: str
+    provider: str
+    state: str
+    prompt: Optional[str] = None
+    auth_url: Optional[str] = None
+    qr_text: Optional[str] = None
+    qr_svg: Optional[str] = None
+    fields: list[str] = Field(default_factory=list)
+    account_id: Optional[str] = None
+    error: Optional[str] = None
+    metadata: dict = Field(default_factory=dict)
+    created_at: Optional[datetime | str] = None
+    updated_at: Optional[datetime | str] = None
+
+
+class ConnectorLogoutResponse(BaseModel):
+    provider: str
+    status: str
+
+
 # --- Memory Records ---
 class MemoryRecord(TimestampedModel):
     id: UUID

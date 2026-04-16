@@ -3,7 +3,8 @@
 ## Overview
 
 LifeRadar is a personal intelligence and communications triage system. It continuously
-ingests messages from Matrix/Beeper (E2EE), Microsoft Graph (Outlook mail), and Google
+ingests messages from direct Telegram and WhatsApp connectors, legacy Matrix/Beeper data,
+Microsoft Graph (Outlook mail), and Google
 Calendar, stores them in PostgreSQL/pgvector, and exposes everything via an API to
 power an AI agent (Hermes).
 
