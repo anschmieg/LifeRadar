@@ -179,7 +179,8 @@ class LifeRadarApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("Telegram Login", response.text)
-        self.assertIn('/connectors/${provider}/login', response.text)
+        self.assertIn("LifeRadar Connector", response.text)
+        self.assertIn("Start Login", response.text)
 
     def test_get_tasks_without_status_uses_limit_only(self):
         connection = AsyncMock()

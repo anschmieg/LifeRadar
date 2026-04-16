@@ -228,46 +228,135 @@ async def run_direct_connector_send(provider: str, external_id: str, content_tex
 def _connector_auth_page(provider: str, api_key: str) -> str:
     safe_provider = provider.lower()
     submit_mode = "poll" if safe_provider == "whatsapp" else "submit"
+    title = provider.title()
     return f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>LifeRadar {provider.title()} Login</title>
+  <title>LifeRadar {title} Login</title>
   <style>
-    :root {{ color-scheme: light; --bg:#f4f1ea; --panel:#fffaf2; --text:#1f1b16; --accent:#0f766e; --muted:#6b6257; --border:#ddd3c3; }}
-    body {{ margin:0; font-family: ui-sans-serif, system-ui, sans-serif; background: radial-gradient(circle at top, #fff8ed, var(--bg)); color:var(--text); }}
-    main {{ max-width:720px; margin:48px auto; background:var(--panel); border:1px solid var(--border); border-radius:24px; padding:28px; box-shadow:0 16px 40px rgba(31,27,22,.08); }}
-    h1 {{ margin-top:0; }}
+    :root {{
+      color-scheme: light;
+      --bg:#f4f1ea;
+      --panel:#fffaf2;
+      --text:#1f1b16;
+      --accent:#0f766e;
+      --accent-2:#134e4a;
+      --muted:#6b6257;
+      --border:#ddd3c3;
+      --success:#166534;
+      --error:#b91c1c;
+    }}
+    * {{ box-sizing:border-box; }}
+    body {{ margin:0; font-family: ui-sans-serif, system-ui, sans-serif; background:
+      radial-gradient(circle at top, #fff8ed 0%, #f8f2e6 42%, var(--bg) 100%); color:var(--text); }}
+    main {{ max-width:760px; margin:48px auto; background:var(--panel); border:1px solid var(--border); border-radius:28px; padding:32px; box-shadow:0 16px 40px rgba(31,27,22,.08); }}
+    h1 {{ margin:0 0 8px; font-size:clamp(2rem,4vw,3rem); }}
+    h2 {{ margin:0 0 8px; font-size:1.2rem; }}
     .muted {{ color:var(--muted); }}
     .hidden {{ display:none; }}
-    input {{ width:100%; padding:12px 14px; margin:8px 0 12px; border-radius:12px; border:1px solid var(--border); font-size:16px; }}
-    button {{ background:var(--accent); color:white; border:none; border-radius:999px; padding:12px 18px; cursor:pointer; font-size:15px; }}
-    pre {{ white-space:pre-wrap; background:#f8f5ef; padding:12px; border-radius:14px; border:1px solid var(--border); }}
+    .hero {{ display:flex; justify-content:space-between; gap:24px; align-items:flex-start; margin-bottom:28px; }}
+    .badge {{ display:inline-flex; align-items:center; gap:8px; font-size:.8rem; letter-spacing:.08em; text-transform:uppercase; color:var(--accent-2); background:#e6f4f1; border:1px solid #cce8e3; border-radius:999px; padding:6px 10px; }}
+    .card {{ border:1px solid var(--border); border-radius:20px; background:#fffdf8; padding:20px; }}
+    .stack {{ display:grid; gap:16px; }}
+    .steps {{ display:flex; gap:10px; flex-wrap:wrap; margin:12px 0 0; padding:0; list-style:none; }}
+    .steps li {{ border:1px solid var(--border); border-radius:999px; padding:8px 12px; font-size:.9rem; color:var(--muted); background:#faf6ee; }}
+    .steps li.active {{ color:var(--accent-2); border-color:#9fd5cb; background:#ecf8f5; }}
+    .steps li.done {{ color:var(--success); border-color:#a7d8b4; background:#eefbf1; }}
+    label {{ display:block; font-weight:600; margin:0 0 6px; }}
+    input {{ width:100%; padding:14px 16px; margin:0; border-radius:14px; border:1px solid var(--border); font-size:16px; background:white; }}
+    input:focus {{ outline:none; border-color:var(--accent); box-shadow:0 0 0 3px rgba(15,118,110,.12); }}
+    button {{ background:var(--accent); color:white; border:none; border-radius:999px; padding:13px 18px; cursor:pointer; font-size:15px; font-weight:600; }}
+    button.secondary {{ background:#efe8dc; color:var(--text); }}
+    button:disabled {{ opacity:.55; cursor:wait; }}
+    .actions {{ display:flex; gap:12px; flex-wrap:wrap; }}
+    .status {{ border-radius:16px; padding:14px 16px; font-size:.95rem; }}
+    .status.info {{ background:#f5f8fa; border:1px solid #d6e3ea; }}
+    .status.success {{ background:#eefbf1; border:1px solid #b9e5c4; color:var(--success); }}
+    .status.error {{ background:#fff0f0; border:1px solid #f3c6c6; color:var(--error); }}
+    .qr-wrap {{ display:grid; justify-items:center; gap:16px; padding:24px; background:#fff; border:1px dashed #cfc3b3; border-radius:20px; }}
     #qr svg {{ width:100%; max-width:320px; height:auto; }}
+    .hint {{ font-size:.92rem; color:var(--muted); }}
+    .field {{ display:grid; gap:6px; }}
+    .field.hidden {{ display:none; }}
+    .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }}
+    @media (max-width: 720px) {{
+      main {{ margin:20px; padding:22px; }}
+      .hero {{ flex-direction:column; }}
+    }}
   </style>
 </head>
 <body>
 <main>
-  <h1>{provider.title()} Login</h1>
-  <p class="muted">This page drives the connector auth flow through the internal chat gateway.</p>
-  <button id="start">Start Login</button>
-  <div id="attempt" class="hidden">
-    <p id="prompt"></p>
-    <div id="telegram-fields" class="hidden">
-      <input id="phone_number" placeholder="Phone number" />
-      <input id="code" placeholder="Verification code" />
-      <input id="password" placeholder="Password" type="password" />
-      <button id="submit">Continue</button>
+  <section class="hero">
+    <div>
+      <div class="badge">LifeRadar Connector</div>
+      <h1>{title} Login</h1>
+      <p class="muted">
+        {"Link your account by scanning a QR code, just like the normal web client flow." if safe_provider == "whatsapp" else "Link your Telegram account in a guided login flow. If QR login is available later, it will appear here automatically."}
+      </p>
+      <ul class="steps" id="steps">
+        <li id="step-start" class="active">Start</li>
+        <li id="step-verify">Verify</li>
+        <li id="step-done">Connected</li>
+      </ul>
     </div>
-    <div id="qr" class="hidden"></div>
-    <pre id="status"></pre>
-  </div>
+    <div class="card">
+      <h2>{title}</h2>
+      <div class="hint" id="summary">
+        {"Open the pair screen and scan the QR code with your phone." if safe_provider == "whatsapp" else "Start login, then follow the phone, code, and password prompts only if needed."}
+      </div>
+    </div>
+  </section>
+
+  <section class="stack">
+    <div class="actions">
+      <button id="start">Start Login</button>
+      <button id="refresh" class="secondary hidden">Refresh Status</button>
+    </div>
+
+    <div id="attempt" class="hidden stack">
+      <div id="statusBox" class="status info">Waiting to start.</div>
+
+      <div id="telegram-fields" class="card hidden stack">
+        <div class="field hidden" id="field-phone">
+          <label for="phone_number">Phone number</label>
+          <input id="phone_number" placeholder="+49 170 1234567" autocomplete="tel" />
+        </div>
+        <div class="field hidden" id="field-code">
+          <label for="code">Verification code</label>
+          <input id="code" placeholder="Telegram login code" inputmode="numeric" />
+        </div>
+        <div class="field hidden" id="field-password">
+          <label for="password">2FA password</label>
+          <input id="password" placeholder="Telegram password" type="password" />
+        </div>
+        <div class="actions">
+          <button id="submit">Continue</button>
+        </div>
+      </div>
+
+      <div id="whatsapp-panel" class="card hidden stack">
+        <div class="qr-wrap">
+          <div id="qr"></div>
+          <div class="hint">On your phone: <span class="mono">WhatsApp → Settings → Linked Devices → Link a Device</span></div>
+        </div>
+      </div>
+
+      <div id="doneBox" class="card hidden">
+        <h2>Connected</h2>
+        <div class="hint">LifeRadar can now keep this connector session alive and backfill chat history.</div>
+      </div>
+    </div>
+  </section>
 </main>
 <script>
 const provider = {json.dumps(safe_provider)};
 const apiKey = {json.dumps(api_key)};
 let attemptId = null;
+let pollTimer = null;
+
 async function api(path, options={{}}) {{
   const headers = Object.assign({{"Content-Type":"application/json"}}, options.headers || {{}});
   if (apiKey) headers["X-API-Key"] = apiKey;
@@ -277,40 +366,136 @@ async function api(path, options={{}}) {{
   if (!response.ok) throw new Error(data.detail || data.error || text || "Request failed");
   return data;
 }}
-function renderAttempt(data) {{
-  document.getElementById("attempt").classList.remove("hidden");
-  document.getElementById("prompt").textContent = data.prompt || data.state;
-  document.getElementById("status").textContent = JSON.stringify(data, null, 2);
-  const fieldsBox = document.getElementById("telegram-fields");
-  const qrBox = document.getElementById("qr");
-  fieldsBox.classList.toggle("hidden", provider === "whatsapp");
-  qrBox.classList.toggle("hidden", !data.qr_svg);
-  qrBox.innerHTML = data.qr_svg || "";
+
+function setStatus(kind, text) {{
+  const box = document.getElementById("statusBox");
+  box.className = `status ${{kind}}`;
+  box.textContent = text;
 }}
-async function poll() {{
-  if (!attemptId) return;
-  const data = await api(`/connectors/${{provider}}/login/${{attemptId}}`);
-  renderAttempt(data);
-  if (!["completed","failed","error"].includes(data.state)) {{
-    setTimeout(poll, 3000);
+
+function setStep(state) {{
+  const states = {{
+    start: ["step-start"],
+    awaiting_phone: ["step-start", "step-verify"],
+    awaiting_code: ["step-start", "step-verify"],
+    awaiting_password: ["step-start", "step-verify"],
+    initializing: ["step-start"],
+    awaiting_qr_scan: ["step-start", "step-verify"],
+    completed: ["step-start", "step-verify", "step-done"],
+  }};
+  const active = new Set(states[state] || ["step-start"]);
+  for (const id of ["step-start","step-verify","step-done"]) {{
+    const el = document.getElementById(id);
+    el.classList.remove("active","done");
+    if (active.has(id)) el.classList.add(id === "step-done" && state === "completed" ? "done" : "active");
+    if (state === "completed") el.classList.add("done");
   }}
 }}
+
+function toggleField(id, visible) {{
+  document.getElementById(id).classList.toggle("hidden", !visible);
+}}
+
+function renderAttempt(data) {{
+  document.getElementById("attempt").classList.remove("hidden");
+  document.getElementById("refresh").classList.remove("hidden");
+  document.getElementById("summary").textContent = data.prompt || (data.state === "completed" ? "Account linked successfully." : "Follow the current login step.");
+  document.getElementById("doneBox").classList.toggle("hidden", data.state !== "completed");
+  setStep(data.state);
+
+  const isWhatsapp = provider === "whatsapp";
+  document.getElementById("whatsapp-panel").classList.toggle("hidden", !isWhatsapp);
+  document.getElementById("telegram-fields").classList.toggle("hidden", isWhatsapp || data.state === "completed");
+  document.getElementById("qr").innerHTML = data.qr_svg || "";
+
+  toggleField("field-phone", data.state === "awaiting_phone");
+  toggleField("field-code", data.state === "awaiting_code");
+  toggleField("field-password", data.state === "awaiting_password");
+
+  if (data.state === "completed") {{
+    setStatus("success", "Connected successfully. LifeRadar is now syncing this account.");
+    return;
+  }}
+  if (data.error) {{
+    setStatus("error", data.error);
+    return;
+  }}
+  if (data.state === "awaiting_qr_scan") {{
+    setStatus("info", "Scan the QR code with your phone to finish linking.");
+    return;
+  }}
+  if (data.state === "awaiting_phone") {{
+    setStatus("info", "Enter the phone number for the account you want to connect.");
+    return;
+  }}
+  if (data.state === "awaiting_code") {{
+    setStatus("info", "Enter the verification code that was sent to Telegram.");
+    return;
+  }}
+  if (data.state === "awaiting_password") {{
+    setStatus("info", "Enter your Telegram 2FA password to complete login.");
+    return;
+  }}
+  setStatus("info", data.prompt || "Waiting for the next step.");
+}}
+
+async function poll() {{
+  if (!attemptId) return;
+  try {{
+    const data = await api(`/connectors/${{provider}}/login/${{attemptId}}`);
+    renderAttempt(data);
+    if (!["completed","failed","error"].includes(data.state)) {{
+      pollTimer = setTimeout(poll, 2500);
+    }}
+  }} catch (error) {{
+    setStatus("error", error.message || "Could not refresh login status.");
+  }}
+}}
+
+function clearInputs() {{
+  for (const id of ["phone_number","code","password"]) {{
+    document.getElementById(id).value = "";
+  }}
+}}
+
 document.getElementById("start").onclick = async () => {{
-  const data = await api(`/connectors/${{provider}}/login`, {{ method:"POST", body: JSON.stringify({{force:false}}) }});
-  attemptId = data.attempt_id;
-  renderAttempt(data);
-  if ({json.dumps(submit_mode)} === "poll") poll();
+  clearInputs();
+  setStatus("info", "Starting login…");
+  const button = document.getElementById("start");
+  button.disabled = true;
+  try {{
+    const data = await api(`/connectors/${{provider}}/login`, {{ method:"POST", body: JSON.stringify({{force:false}}) }});
+    attemptId = data.attempt_id;
+    renderAttempt(data);
+    if ({json.dumps(submit_mode)} === "poll" || data.state === "initializing" || data.state === "awaiting_qr_scan") poll();
+  }} catch (error) {{
+    setStatus("error", error.message || "Could not start login.");
+  }} finally {{
+    button.disabled = false;
+  }}
 }};
 document.getElementById("submit").onclick = async () => {{
   if (!attemptId) return;
+  const button = document.getElementById("submit");
+  button.disabled = true;
   const body = {{
     phone_number: document.getElementById("phone_number").value || undefined,
     code: document.getElementById("code").value || undefined,
     password: document.getElementById("password").value || undefined
   }};
-  const data = await api(`/connectors/${{provider}}/login/${{attemptId}}/submit`, {{ method:"POST", body: JSON.stringify(body) }});
-  renderAttempt(data);
-  if (!["completed","failed","error"].includes(data.state)) poll();
+  try {{
+    const data = await api(`/connectors/${{provider}}/login/${{attemptId}}/submit`, {{ method:"POST", body: JSON.stringify(body) }});
+    renderAttempt(data);
+    if (!["completed","failed","error"].includes(data.state)) poll();
+  }} catch (error) {{
+    setStatus("error", error.message || "Login step failed.");
+  }} finally {{
+    button.disabled = false;
+  }}
+}};
+document.getElementById("refresh").onclick = async () => {{
+  if (pollTimer) clearTimeout(pollTimer);
+  await poll();
 }};
 </script>
 </body>
