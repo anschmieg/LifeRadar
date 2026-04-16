@@ -3,7 +3,7 @@ set -euo pipefail
 
 : "${LIFE_RADAR_PROBE_INTERVAL_SEC:=300}"
 : "${LIFE_RADAR_MATRIX_RUST_RECOVER_HTTP_ON_FAILURE:=1}"
-: "${LIFE_RADAR_BEEPER_ENABLED:=false}"
+: "${LIFE_RADAR_MATRIX_ENABLED:=true}"
 
 /opt/life-radar/bin/bootstrap.sh
 
@@ -23,7 +23,7 @@ run_step() {
 while true; do
   matrix_ingest_failed=0
 
-  if [[ "${LIFE_RADAR_BEEPER_ENABLED,,}" == "true" ]]; then
+  if [[ "${LIFE_RADAR_MATRIX_ENABLED,,}" != "false" ]]; then
     run_step "matrix-probe" /usr/local/bin/life-radar-matrix-rust-probe || true
     if ! run_step "matrix-ingest" env LIFE_RADAR_MATRIX_RUST_MODE=ingest_live_history /usr/local/bin/life-radar-matrix-rust-probe; then
       matrix_ingest_failed=1

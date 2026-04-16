@@ -17,7 +17,7 @@ services:
       LIFE_RADAR_API_KEY: "${LIFE_RADAR_API_KEY}"
       LIFE_RADAR_MATRIX_BRIDGE_URL: http://life-radar-matrix-bridge:8010
       LIFE_RADAR_CHAT_GATEWAY_URL: http://life-radar-chat-gateway:8020
-      LIFE_RADAR_BEEPER_ENABLED: "${LIFE_RADAR_BEEPER_ENABLED}"
+      LIFE_RADAR_MATRIX_ENABLED: "${LIFE_RADAR_MATRIX_ENABLED:-true}"
     expose:
       - "8000"
     extra_hosts:
@@ -79,14 +79,15 @@ services:
       MATRIX_SESSION_PATH: "${MATRIX_SESSION_PATH}"
       MATRIX_RUST_SESSION_PATH: "${MATRIX_RUST_SESSION_PATH}"
       MATRIX_RUST_STORE: "${MATRIX_RUST_STORE}"
-      MATRIX_E2EE_EXPORT_PATH: "${MATRIX_E2EE_EXPORT_PATH}"
-      MATRIX_E2EE_EXPORT_PASSPHRASE_PATH: "${MATRIX_E2EE_EXPORT_PASSPHRASE_PATH}"
+      MATRIX_ROOM_KEYS_PATH: "${MATRIX_ROOM_KEYS_PATH}"
+      MATRIX_ROOM_KEYS_PASSPHRASE_PATH: "${MATRIX_ROOM_KEYS_PASSPHRASE_PATH}"
       MATRIX_RUST_KEY_IMPORT_MARKER: "${MATRIX_RUST_KEY_IMPORT_MARKER}"
       LIFE_RADAR_MATRIX_RUST_CANDIDATE_ID: "${LIFE_RADAR_MATRIX_RUST_CANDIDATE_ID}"
       LIFE_RADAR_MATRIX_RUST_CANDIDATE_TYPE: "${LIFE_RADAR_MATRIX_RUST_CANDIDATE_TYPE}"
       LIFE_RADAR_MATRIX_RUST_TIMEOUT_SEC: "${LIFE_RADAR_MATRIX_RUST_TIMEOUT_SEC}"
       LIFE_RADAR_MATRIX_RUST_RECOVER_HTTP_ON_FAILURE: "${LIFE_RADAR_MATRIX_RUST_RECOVER_HTTP_ON_FAILURE}"
-      LIFE_RADAR_BEEPER_ENABLED: "${LIFE_RADAR_BEEPER_ENABLED}"
+      LIFE_RADAR_MATRIX_ENABLED: "${LIFE_RADAR_MATRIX_ENABLED:-true}"
+      LIFE_RADAR_MATRIX_HOMESERVER_URL: "${LIFE_RADAR_MATRIX_HOMESERVER_URL:-https://matrix.beeper.com}"
       MSGRAPH_CLIENT_ID: "${MSGRAPH_CLIENT_ID}"
       MSGRAPH_CLIENT_SECRET: "${MSGRAPH_CLIENT_SECRET}"
       MSGRAPH_TENANT_ID: "${MSGRAPH_TENANT_ID}"
@@ -157,30 +158,32 @@ services:
     restart: unless-stopped
 
 volumes:
+  # Default: ./data/* for local dev (relative to project dir)
+  # On Coolify: set DATA_DIR=/data/life-radar to use system paths
   outlook-mcp-tokens:
     driver: local
     driver_opts:
       type: none
       o: bind
-      device: /data/life-radar/outlook-token-cache
+      device: ${DATA_DIR:-./data/outlook-token-cache}
   connector-sessions:
     driver: local
     driver_opts:
       type: none
       o: bind
-      device: /data/life-radar/connectors
+      device: ${DATA_DIR:-./data/connectors}
   life-radar-identity:
     driver: local
     driver_opts:
       type: none
       o: bind
-      device: /data/life-radar/identity
+      device: ${DATA_DIR:-./data/identity}
   life-radar-workspace:
     driver: local
     driver_opts:
       type: none
       o: bind
-      device: /data/life-radar/workspace
+      device: ${DATA_DIR:-./data/workspace}
 
 networks:
   coolify:

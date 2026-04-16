@@ -78,7 +78,7 @@ MATRIX_BRIDGE_URL = os.environ.get(
 CHAT_GATEWAY_URL = os.environ.get(
     "LIFE_RADAR_CHAT_GATEWAY_URL", "http://life-radar-chat-gateway:8020"
 )
-BEEPER_ENABLED = os.environ.get("LIFE_RADAR_BEEPER_ENABLED", "false").lower() == "true"
+MATRIX_ENABLED = os.environ.get("LIFE_RADAR_MATRIX_ENABLED", "true").lower() != "false"
 
 logger = logging.getLogger(__name__)
 
@@ -1075,10 +1075,10 @@ async def send_message(request: MessageSendRequest, http_request: Request):
     conversation = await load_conversation_for_send(request.conversation_id)
 
     if conversation["source"] == "matrix":
-        if not BEEPER_ENABLED:
+        if not MATRIX_ENABLED:
             raise HTTPException(
                 status_code=501,
-                detail="Sending messages for source 'matrix' is disabled while Beeper integration is off",
+                detail="Sending messages for source 'matrix' is disabled (LIFE_RADAR_MATRIX_ENABLED=false)",
             )
         message_id = await run_matrix_send(conversation["external_id"], request.content_text)
         return MessageSendResponse(status="sent", message_id=message_id)

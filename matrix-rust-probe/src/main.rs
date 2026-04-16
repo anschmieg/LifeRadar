@@ -31,6 +31,7 @@ use tokio_postgres::{Client as PgClient, NoTls};
 #[derive(Debug, Deserialize)]
 struct SessionFile {
     access_token: String,
+    refresh_token: Option<String>,
     user_id: String,
     device_id: String,
     homeserver: String,
@@ -81,12 +82,12 @@ impl ProbeConfig {
                 "/app/identity/matrix-rust-sdk-store",
             )),
             key_export_path: PathBuf::from(env_var(
-                "MATRIX_E2EE_EXPORT_PATH",
-                "/app/identity/beeper-e2e-keys.txt",
+                "MATRIX_ROOM_KEYS_PATH",
+                "/app/identity/matrix-e2e-keys.txt",
             )),
             key_passphrase_path: PathBuf::from(env_var(
-                "MATRIX_E2EE_EXPORT_PASSPHRASE_PATH",
-                "/app/identity/.e2ee-export-passphrase",
+                "MATRIX_ROOM_KEYS_PASSPHRASE_PATH",
+                "/app/identity/.e2e-keys-passphrase",
             )),
             key_import_marker_path: PathBuf::from(env_var(
                 "MATRIX_RUST_KEY_IMPORT_MARKER",
@@ -1727,11 +1728,18 @@ async fn build_client(cfg: &ProbeConfig) -> Result<(Client, SessionFile)> {
         .parse()
         .context("invalid matrix user_id")?;
     let device_id: OwnedDeviceId = session_file.device_id.as_str().into();
+    // Use refresh_token from session file if available
+    let refresh_token = session_file
+        .refresh_token
+        .as_ref()
+        .filter(|t| !t.is_empty())
+        .cloned();
+
     let session = MatrixSession {
         meta: SessionMeta { user_id, device_id },
         tokens: SessionTokens {
             access_token: session_file.access_token.clone(),
-            refresh_token: None,
+            refresh_token,
         },
     };
 

@@ -42,7 +42,10 @@ Options:
   process.exit(0);
 }
 
-const HOMESERVER = values.homeserver.replace(/\/$/, '');
+const HOMESERVER = (
+    process.env.LIFE_RADAR_MATRIX_HOMESERVER_URL
+    || values.homeserver
+).replace(/\/$/, '');
 const OUTPUT_PATH = values.output || './matrix-session.json';
 const USER_ID = values.user;
 const POLL_CODE = values.poll;

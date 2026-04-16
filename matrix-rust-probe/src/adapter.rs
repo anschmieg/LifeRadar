@@ -112,7 +112,7 @@ pub fn build_room_info(
             "topic": room_topic.filter(|value| !value.is_empty()),
             "event_counts": event_counts,
             "provider": "matrix",
-            "provider_hints": ["beeper-matrix-compatible"],
+            "provider_hints": ["matrix-compatible"],
         })
         .to_string(),
     }

@@ -6,7 +6,7 @@ set -euo pipefail
 : "${LIFE_RADAR_DB_NAME:=life_radar}"
 : "${LIFE_RADAR_DB_USER:=life_radar}"
 : "${LIFE_RADAR_DB_PASSWORD:=change-me-in-env}"
-: "${LIFE_RADAR_BEEPER_ENABLED:=false}"
+: "${LIFE_RADAR_MATRIX_ENABLED:=true}"
 
 export PGPASSWORD="$LIFE_RADAR_DB_PASSWORD"
 SCHEMA_PATH="/opt/life-radar/schema.sql"
@@ -49,7 +49,7 @@ psql \
   --set ON_ERROR_STOP=1 \
   --file "$SCHEMA_PATH"
 
-if [[ "${LIFE_RADAR_BEEPER_ENABLED,,}" == "true" ]]; then
+if [[ "${LIFE_RADAR_MATRIX_ENABLED,,}" != "false" ]]; then
   /opt/life-radar/bin/backfill-matrix-history.sh || true
   /opt/life-radar/bin/prune-matrix-noise-events.sh || true
 fi
