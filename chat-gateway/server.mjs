@@ -13,7 +13,8 @@ const db = new GatewayDb({ logger });
 const connectors = new Map();
 
 function boolEnv(name, fallback = false) {
-  const value = (process.env[name] ?? String(fallback)).toLowerCase();
+  const raw = process.env[name];
+  const value = (raw == null || raw === '' ? String(fallback) : raw).toLowerCase();
   return ['1', 'true', 'yes', 'on'].includes(value);
 }
 
