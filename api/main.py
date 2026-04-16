@@ -71,14 +71,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-MCP_URL = os.environ.get("LIFE_RADAR_MCP_URL", "http://liferadar-mcp:8090")
+MCP_URL = os.environ.get("LIFERADAR_MCP_URL", "http://liferadar-mcp:8090")
 MATRIX_BRIDGE_URL = os.environ.get(
-    "LIFE_RADAR_MATRIX_BRIDGE_URL", "http://life-radar-matrix-bridge:8010"
+    "LIFERADAR_MATRIX_BRIDGE_URL", "http://liferadar-matrix-bridge:8010"
 )
 CHAT_GATEWAY_URL = os.environ.get(
-    "LIFE_RADAR_CHAT_GATEWAY_URL", "http://life-radar-chat-gateway:8020"
+    "LIFERADAR_CHAT_GATEWAY_URL", "http://liferadar-chat-gateway:8020"
 )
-MATRIX_ENABLED = os.environ.get("LIFE_RADAR_MATRIX_ENABLED", "true").lower() != "false"
+MATRIX_ENABLED = os.environ.get("LIFERADAR_MATRIX_ENABLED", "true").lower() != "false"
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +124,7 @@ def _records_to_models(model_cls, records):
 
 
 def _expected_api_key() -> str:
-    return os.environ.get("LIFE_RADAR_API_KEY", "").strip()
+    return os.environ.get("LIFERADAR_API_KEY", "").strip()
 
 
 def _provided_api_key(request: Request, allow_query_param: bool = False) -> str:
@@ -1078,7 +1078,7 @@ async def send_message(request: MessageSendRequest, http_request: Request):
         if not MATRIX_ENABLED:
             raise HTTPException(
                 status_code=501,
-                detail="Sending messages for source 'matrix' is disabled (LIFE_RADAR_MATRIX_ENABLED=false)",
+                detail="Sending messages for source 'matrix' is disabled (LIFERADAR_MATRIX_ENABLED=false)",
             )
         message_id = await run_matrix_send(conversation["external_id"], request.content_text)
         return MessageSendResponse(status="sent", message_id=message_id)

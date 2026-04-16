@@ -64,15 +64,15 @@ struct ProbeConfig {
 impl ProbeConfig {
     fn from_env() -> Result<Self> {
         Ok(Self {
-            db_host: env_var("LIFE_RADAR_DB_HOST", "life-radar-db"),
-            db_port: env_var("LIFE_RADAR_DB_PORT", "5432")
+            db_host: env_var("LIFERADAR_DB_HOST", "liferadar-db"),
+            db_port: env_var("LIFERADAR_DB_PORT", "5432")
                 .parse()
-                .context("invalid LIFE_RADAR_DB_PORT")?,
-            db_name: env_var("LIFE_RADAR_DB_NAME", "life_radar"),
-            db_user: env_var("LIFE_RADAR_DB_USER", "life_radar"),
-            db_password: env_var("LIFE_RADAR_DB_PASSWORD", "change-me-in-env"),
-            candidate_id: env_var("LIFE_RADAR_MATRIX_RUST_CANDIDATE_ID", "matrix-rust-sdk"),
-            candidate_type: env_var("LIFE_RADAR_MATRIX_RUST_CANDIDATE_TYPE", "matrix-native"),
+                .context("invalid LIFERADAR_DB_PORT")?,
+            db_name: env_var("LIFERADAR_DB_NAME", "life_radar"),
+            db_user: env_var("LIFERADAR_DB_USER", "life_radar"),
+            db_password: env_var("LIFERADAR_DB_PASSWORD", "change-me-in-env"),
+            candidate_id: env_var("LIFERADAR_MATRIX_RUST_CANDIDATE_ID", "matrix-rust-sdk"),
+            candidate_type: env_var("LIFERADAR_MATRIX_RUST_CANDIDATE_TYPE", "matrix-native"),
             session_path: PathBuf::from(env_var(
                 "MATRIX_RUST_SESSION_PATH",
                 "/app/identity/matrix-session.json",
@@ -94,32 +94,32 @@ impl ProbeConfig {
                 "/app/identity/matrix-rust-sdk-store/room-key-import-marker.json",
             )),
             report_dir: PathBuf::from(env_var(
-                "LIFE_RADAR_REPORT_DIR",
-                "/app/workspace/life-radar/reports",
+                "LIFERADAR_REPORT_DIR",
+                "/app/workspace/liferadar/reports",
             )),
-            timeout_seconds: env_var("LIFE_RADAR_MATRIX_RUST_TIMEOUT_SEC", "20")
+            timeout_seconds: env_var("LIFERADAR_MATRIX_RUST_TIMEOUT_SEC", "20")
                 .parse()
-                .context("invalid LIFE_RADAR_MATRIX_RUST_TIMEOUT_SEC")?,
-            mode: env_var("LIFE_RADAR_MATRIX_RUST_MODE", "probe"),
-            inspect_room_id: env::var("LIFE_RADAR_MATRIX_RUST_ROOM_ID").ok(),
-            recent_room_limit: env_var("LIFE_RADAR_MATRIX_RUST_RECENT_ROOM_LIMIT", "5")
+                .context("invalid LIFERADAR_MATRIX_RUST_TIMEOUT_SEC")?,
+            mode: env_var("LIFERADAR_MATRIX_RUST_MODE", "probe"),
+            inspect_room_id: env::var("LIFERADAR_MATRIX_RUST_ROOM_ID").ok(),
+            recent_room_limit: env_var("LIFERADAR_MATRIX_RUST_RECENT_ROOM_LIMIT", "5")
                 .parse()
-                .context("invalid LIFE_RADAR_MATRIX_RUST_RECENT_ROOM_LIMIT")?,
-            recent_message_limit: env_var("LIFE_RADAR_MATRIX_RUST_RECENT_MESSAGE_LIMIT", "10")
+                .context("invalid LIFERADAR_MATRIX_RUST_RECENT_ROOM_LIMIT")?,
+            recent_message_limit: env_var("LIFERADAR_MATRIX_RUST_RECENT_MESSAGE_LIMIT", "10")
                 .parse()
-                .context("invalid LIFE_RADAR_MATRIX_RUST_RECENT_MESSAGE_LIMIT")?,
+                .context("invalid LIFERADAR_MATRIX_RUST_RECENT_MESSAGE_LIMIT")?,
             undecrypted_heal_room_limit: env_var(
-                "LIFE_RADAR_MATRIX_RUST_UNDECRYPTED_HEAL_ROOM_LIMIT",
+                "LIFERADAR_MATRIX_RUST_UNDECRYPTED_HEAL_ROOM_LIMIT",
                 "3",
             )
             .parse()
-            .context("invalid LIFE_RADAR_MATRIX_RUST_UNDECRYPTED_HEAL_ROOM_LIMIT")?,
+            .context("invalid LIFERADAR_MATRIX_RUST_UNDECRYPTED_HEAL_ROOM_LIMIT")?,
             undecrypted_heal_cooldown_hours: env_var(
-                "LIFE_RADAR_MATRIX_RUST_UNDECRYPTED_HEAL_COOLDOWN_HOURS",
+                "LIFERADAR_MATRIX_RUST_UNDECRYPTED_HEAL_COOLDOWN_HOURS",
                 "24",
             )
             .parse()
-            .context("invalid LIFE_RADAR_MATRIX_RUST_UNDECRYPTED_HEAL_COOLDOWN_HOURS")?,
+            .context("invalid LIFERADAR_MATRIX_RUST_UNDECRYPTED_HEAL_COOLDOWN_HOURS")?,
         })
     }
 }
@@ -598,10 +598,10 @@ async fn inspect_room(cfg: &ProbeConfig) -> Result<InspectRoomReport> {
     let requested_room_id = cfg
         .inspect_room_id
         .clone()
-        .context("missing LIFE_RADAR_MATRIX_RUST_ROOM_ID for inspect_room mode")?;
+        .context("missing LIFERADAR_MATRIX_RUST_ROOM_ID for inspect_room mode")?;
     let room_id: OwnedRoomId = requested_room_id
         .parse()
-        .context("invalid LIFE_RADAR_MATRIX_RUST_ROOM_ID")?;
+        .context("invalid LIFERADAR_MATRIX_RUST_ROOM_ID")?;
 
     let (client, session_file) = build_client(cfg).await?;
     maybe_import_room_keys(cfg, &client).await?;
@@ -757,7 +757,7 @@ async fn ingest_via_http(cfg: &ProbeConfig) -> Result<String> {
         serde_json::from_str(&session_json).context("invalid matrix session json")?;
 
     let http_client = HttpClient::builder()
-        .user_agent("life-radar-matrix-probe/0.1.0")
+        .user_agent("liferadar-matrix-probe/0.1.0")
         .timeout(Duration::from_secs(cfg.timeout_seconds))
         .build()
         .context("failed to build HTTP client")?;
@@ -772,7 +772,7 @@ async fn ingest_via_http(cfg: &ProbeConfig) -> Result<String> {
     );
     let (db, connection) = tokio_postgres::connect(&conn_str, NoTls)
         .await
-        .context("failed to connect to life-radar postgres for HTTP ingest")?;
+        .context("failed to connect to liferadar postgres for HTTP ingest")?;
     tokio::spawn(async move {
         if let Err(err) = connection.await {
             eprintln!("postgres connection error: {err}");
@@ -1254,7 +1254,7 @@ async fn try_sdk_ingest(cfg: &ProbeConfig) -> Result<String> {
 
     let db = connect_postgres(
         cfg,
-        "failed to connect to life-radar postgres for live ingest",
+        "failed to connect to liferadar postgres for live ingest",
     )
     .await?;
     let persisted_sync_token = load_sync_checkpoint(&db).await?;
@@ -1520,7 +1520,7 @@ async fn fetch_normalized_sync_next_batch(
     since: Option<&str>,
 ) -> Result<String> {
     let http_client = HttpClient::builder()
-        .user_agent("life-radar-matrix-probe/0.1.0")
+        .user_agent("liferadar-matrix-probe/0.1.0")
         .timeout(Duration::from_secs(cfg.timeout_seconds))
         .build()
         .context("failed to build HTTP client for normalized sync bootstrap")?;
@@ -1754,11 +1754,11 @@ async fn build_client(cfg: &ProbeConfig) -> Result<(Client, SessionFile)> {
 
 async fn send_message_via_sdk(cfg: &ProbeConfig) -> Result<SendMessageResult> {
     let room_id_value =
-        env::var("LIFE_RADAR_SEND_ROOM_ID").context("missing LIFE_RADAR_SEND_ROOM_ID")?;
-    let content_text = env::var("LIFE_RADAR_SEND_TEXT").context("missing LIFE_RADAR_SEND_TEXT")?;
+        env::var("LIFERADAR_SEND_ROOM_ID").context("missing LIFERADAR_SEND_ROOM_ID")?;
+    let content_text = env::var("LIFERADAR_SEND_TEXT").context("missing LIFERADAR_SEND_TEXT")?;
     let room_id: OwnedRoomId = room_id_value
         .parse()
-        .context("invalid LIFE_RADAR_SEND_ROOM_ID")?;
+        .context("invalid LIFERADAR_SEND_ROOM_ID")?;
 
     let (client, _) = build_client(cfg).await?;
     maybe_import_room_keys(cfg, &client).await?;
@@ -2294,7 +2294,7 @@ async fn persist_probe(cfg: &ProbeConfig, observed_at: &str, result: &ProbeResul
     );
     let (client, connection) = tokio_postgres::connect(&conn_str, NoTls)
         .await
-        .context("failed to connect to life-radar postgres")?;
+        .context("failed to connect to liferadar postgres")?;
     tokio::spawn(async move {
         if let Err(err) = connection.await {
             eprintln!("postgres connection error: {err}");
@@ -2475,7 +2475,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("life-radar-{name}-{unique}.txt"))
+        std::env::temp_dir().join(format!("liferadar-{name}-{unique}.txt"))
     }
 
     #[test]

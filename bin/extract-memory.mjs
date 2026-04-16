@@ -190,4 +190,4 @@ setRuntimeMetadata('memory_extraction', {
   extracted_at: new Date().toISOString(),
 });
 
-console.log(`life-radar memory extraction complete: scanned=${result.scanned_messages || 0} candidates=${result.candidate_count || 0} inserted=${result.inserted_count || 0}`);
+console.log(`liferadar memory extraction complete: scanned=${result.scanned_messages || 0} candidates=${result.candidate_count || 0} inserted=${result.inserted_count || 0}`);

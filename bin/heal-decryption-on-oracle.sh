@@ -4,7 +4,7 @@ set -euo pipefail
 # Script to push new E2EE keys to oracle and trigger full re-import + ingest
 # Usage: ./bin/heal-decryption-on-oracle.sh
 
-WORKER="life-radar-worker-vos0okssswwsos88ckg88wk8-210144309091"
+WORKER="liferadar-worker-vos0okssswwsos88ckg88wk8-210144309091"
 IDENTITY="/app/identity"
 
 echo "=== Step 1: Copy new key export and passphrase to oracle ==="

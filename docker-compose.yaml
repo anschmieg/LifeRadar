@@ -3,21 +3,21 @@
 # Auth/session state must live on stable host paths so reconnects survive deploys.
 
 services:
-  life-radar-api:
+  liferadar-api:
     build:
       context: .
       dockerfile: Dockerfile.api
-    container_name: life-radar-api
+    container_name: liferadar-api
     environment:
-      LIFE_RADAR_DB_HOST: "${LIFE_RADAR_DB_HOST}"
-      LIFE_RADAR_DB_PORT: "${LIFE_RADAR_DB_PORT}"
-      LIFE_RADAR_DB_NAME: "${LIFE_RADAR_DB_NAME}"
-      LIFE_RADAR_DB_USER: "${LIFE_RADAR_DB_USER}"
-      LIFE_RADAR_DB_PASSWORD: "${LIFE_RADAR_DB_PASSWORD}"
-      LIFE_RADAR_API_KEY: "${LIFE_RADAR_API_KEY}"
-      LIFE_RADAR_MATRIX_BRIDGE_URL: http://life-radar-matrix-bridge:8010
-      LIFE_RADAR_CHAT_GATEWAY_URL: http://life-radar-chat-gateway:8020
-      LIFE_RADAR_MATRIX_ENABLED: "${LIFE_RADAR_MATRIX_ENABLED:-true}"
+      LIFERADAR_DB_HOST: "${LIFERADAR_DB_HOST}"
+      LIFERADAR_DB_PORT: "${LIFERADAR_DB_PORT}"
+      LIFERADAR_DB_NAME: "${LIFERADAR_DB_NAME}"
+      LIFERADAR_DB_USER: "${LIFERADAR_DB_USER}"
+      LIFERADAR_DB_PASSWORD: "${LIFERADAR_DB_PASSWORD}"
+      LIFERADAR_API_KEY: "${LIFERADAR_API_KEY}"
+      LIFERADAR_MATRIX_BRIDGE_URL: http://liferadar-matrix-bridge:8010
+      LIFERADAR_CHAT_GATEWAY_URL: http://liferadar-chat-gateway:8020
+      LIFERADAR_MATRIX_ENABLED: "${LIFERADAR_MATRIX_ENABLED:-true}"
     expose:
       - "8000"
     extra_hosts:
@@ -34,20 +34,20 @@ services:
       - coolify
     restart: unless-stopped
 
-  life-radar-mcp:
+  liferadar-mcp:
     build:
       context: .
       dockerfile: Dockerfile.mcp
-    container_name: life-radar-mcp
+    container_name: liferadar-mcp
     environment:
-      LIFE_RADAR_DB_HOST: "${LIFE_RADAR_DB_HOST}"
-      LIFE_RADAR_DB_PORT: "${LIFE_RADAR_DB_PORT}"
-      LIFE_RADAR_DB_NAME: "${LIFE_RADAR_DB_NAME}"
-      LIFE_RADAR_DB_USER: "${LIFE_RADAR_DB_USER}"
-      LIFE_RADAR_DB_PASSWORD: "${LIFE_RADAR_DB_PASSWORD}"
-      LIFE_RADAR_API_URL: http://life-radar-api:8000
-      LIFE_RADAR_PUBLIC_API_URL: "${LIFE_RADAR_PUBLIC_API_URL}"
-      LIFE_RADAR_API_KEY: "${LIFE_RADAR_API_KEY}"
+      LIFERADAR_DB_HOST: "${LIFERADAR_DB_HOST}"
+      LIFERADAR_DB_PORT: "${LIFERADAR_DB_PORT}"
+      LIFERADAR_DB_NAME: "${LIFERADAR_DB_NAME}"
+      LIFERADAR_DB_USER: "${LIFERADAR_DB_USER}"
+      LIFERADAR_DB_PASSWORD: "${LIFERADAR_DB_PASSWORD}"
+      LIFERADAR_API_URL: http://liferadar-api:8000
+      LIFERADAR_PUBLIC_API_URL: "${LIFERADAR_PUBLIC_API_URL}"
+      LIFERADAR_API_KEY: "${LIFERADAR_API_KEY}"
       OUTLOOK_MCP_ENABLED: "${OUTLOOK_MCP_ENABLED}"
       MSGRAPH_CLIENT_ID: "${MSGRAPH_CLIENT_ID}"
       MSGRAPH_CLIENT_SECRET: "${MSGRAPH_CLIENT_SECRET}"
@@ -62,32 +62,32 @@ services:
       - coolify
     restart: unless-stopped
     depends_on:
-      - life-radar-api
-      - life-radar-chat-gateway
+      - liferadar-api
+      - liferadar-chat-gateway
 
-  life-radar-worker:
+  liferadar-worker:
     build:
       context: .
       dockerfile: Dockerfile.worker
-    container_name: life-radar-worker
+    container_name: liferadar-worker
     environment:
-      LIFE_RADAR_DB_HOST: "${LIFE_RADAR_DB_HOST}"
-      LIFE_RADAR_DB_PORT: "${LIFE_RADAR_DB_PORT}"
-      LIFE_RADAR_DB_NAME: "${LIFE_RADAR_DB_NAME}"
-      LIFE_RADAR_DB_USER: "${LIFE_RADAR_DB_USER}"
-      LIFE_RADAR_DB_PASSWORD: "${LIFE_RADAR_DB_PASSWORD}"
+      LIFERADAR_DB_HOST: "${LIFERADAR_DB_HOST}"
+      LIFERADAR_DB_PORT: "${LIFERADAR_DB_PORT}"
+      LIFERADAR_DB_NAME: "${LIFERADAR_DB_NAME}"
+      LIFERADAR_DB_USER: "${LIFERADAR_DB_USER}"
+      LIFERADAR_DB_PASSWORD: "${LIFERADAR_DB_PASSWORD}"
       MATRIX_SESSION_PATH: "${MATRIX_SESSION_PATH}"
       MATRIX_RUST_SESSION_PATH: "${MATRIX_RUST_SESSION_PATH}"
       MATRIX_RUST_STORE: "${MATRIX_RUST_STORE}"
       MATRIX_ROOM_KEYS_PATH: "${MATRIX_ROOM_KEYS_PATH}"
       MATRIX_ROOM_KEYS_PASSPHRASE_PATH: "${MATRIX_ROOM_KEYS_PASSPHRASE_PATH}"
       MATRIX_RUST_KEY_IMPORT_MARKER: "${MATRIX_RUST_KEY_IMPORT_MARKER}"
-      LIFE_RADAR_MATRIX_RUST_CANDIDATE_ID: "${LIFE_RADAR_MATRIX_RUST_CANDIDATE_ID}"
-      LIFE_RADAR_MATRIX_RUST_CANDIDATE_TYPE: "${LIFE_RADAR_MATRIX_RUST_CANDIDATE_TYPE}"
-      LIFE_RADAR_MATRIX_RUST_TIMEOUT_SEC: "${LIFE_RADAR_MATRIX_RUST_TIMEOUT_SEC}"
-      LIFE_RADAR_MATRIX_RUST_RECOVER_HTTP_ON_FAILURE: "${LIFE_RADAR_MATRIX_RUST_RECOVER_HTTP_ON_FAILURE}"
-      LIFE_RADAR_MATRIX_ENABLED: "${LIFE_RADAR_MATRIX_ENABLED:-true}"
-      LIFE_RADAR_MATRIX_HOMESERVER_URL: "${LIFE_RADAR_MATRIX_HOMESERVER_URL:-https://matrix.beeper.com}"
+      LIFERADAR_MATRIX_RUST_CANDIDATE_ID: "${LIFERADAR_MATRIX_RUST_CANDIDATE_ID}"
+      LIFERADAR_MATRIX_RUST_CANDIDATE_TYPE: "${LIFERADAR_MATRIX_RUST_CANDIDATE_TYPE}"
+      LIFERADAR_MATRIX_RUST_TIMEOUT_SEC: "${LIFERADAR_MATRIX_RUST_TIMEOUT_SEC}"
+      LIFERADAR_MATRIX_RUST_RECOVER_HTTP_ON_FAILURE: "${LIFERADAR_MATRIX_RUST_RECOVER_HTTP_ON_FAILURE}"
+      LIFERADAR_MATRIX_ENABLED: "${LIFERADAR_MATRIX_ENABLED:-true}"
+      LIFERADAR_MATRIX_HOMESERVER_URL: "${LIFERADAR_MATRIX_HOMESERVER_URL:-https://matrix.beeper.com}"
       MSGRAPH_CLIENT_ID: "${MSGRAPH_CLIENT_ID}"
       MSGRAPH_CLIENT_SECRET: "${MSGRAPH_CLIENT_SECRET}"
       MSGRAPH_TENANT_ID: "${MSGRAPH_TENANT_ID}"
@@ -99,33 +99,33 @@ services:
     expose:
       - "8080"
     volumes:
-      - life-radar-identity:/app/identity
-      - life-radar-workspace:/app/workspace
+      - liferadar-identity:/app/identity
+      - liferadar-workspace:/app/workspace
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
       - coolify
     restart: unless-stopped
 
-  life-radar-chat-gateway:
+  liferadar-chat-gateway:
     build:
       context: .
       dockerfile: Dockerfile.chat-gateway
-    container_name: life-radar-chat-gateway
+    container_name: liferadar-chat-gateway
     environment:
-      LIFE_RADAR_DB_HOST: "${LIFE_RADAR_DB_HOST}"
-      LIFE_RADAR_DB_PORT: "${LIFE_RADAR_DB_PORT}"
-      LIFE_RADAR_DB_NAME: "${LIFE_RADAR_DB_NAME}"
-      LIFE_RADAR_DB_USER: "${LIFE_RADAR_DB_USER}"
-      LIFE_RADAR_DB_PASSWORD: "${LIFE_RADAR_DB_PASSWORD}"
-      LIFE_RADAR_CONNECTOR_SESSION_DIR: /app/connectors
-      LIFE_RADAR_CHAT_GATEWAY_PORT: 8020
-      LIFE_RADAR_TELEGRAM_ENABLED: "${LIFE_RADAR_TELEGRAM_ENABLED}"
-      LIFE_RADAR_WHATSAPP_ENABLED: "${LIFE_RADAR_WHATSAPP_ENABLED}"
-      LIFE_RADAR_WHATSAPP_UNOFFICIAL_ALLOWED: "${LIFE_RADAR_WHATSAPP_UNOFFICIAL_ALLOWED}"
+      LIFERADAR_DB_HOST: "${LIFERADAR_DB_HOST}"
+      LIFERADAR_DB_PORT: "${LIFERADAR_DB_PORT}"
+      LIFERADAR_DB_NAME: "${LIFERADAR_DB_NAME}"
+      LIFERADAR_DB_USER: "${LIFERADAR_DB_USER}"
+      LIFERADAR_DB_PASSWORD: "${LIFERADAR_DB_PASSWORD}"
+      LIFERADAR_CONNECTOR_SESSION_DIR: /app/connectors
+      LIFERADAR_CHAT_GATEWAY_PORT: 8020
+      LIFERADAR_TELEGRAM_ENABLED: "${LIFERADAR_TELEGRAM_ENABLED}"
+      LIFERADAR_WHATSAPP_ENABLED: "${LIFERADAR_WHATSAPP_ENABLED}"
+      LIFERADAR_WHATSAPP_UNOFFICIAL_ALLOWED: "${LIFERADAR_WHATSAPP_UNOFFICIAL_ALLOWED}"
       TELEGRAM_API_ID: "${TELEGRAM_API_ID}"
       TELEGRAM_API_HASH: "${TELEGRAM_API_HASH}"
-      LIFE_RADAR_CONNECTOR_BACKFILL_LIMIT_PER_CHAT: "${LIFE_RADAR_CONNECTOR_BACKFILL_LIMIT_PER_CHAT}"
+      LIFERADAR_CONNECTOR_BACKFILL_LIMIT_PER_CHAT: "${LIFERADAR_CONNECTOR_BACKFILL_LIMIT_PER_CHAT}"
     volumes:
       - connector-sessions:/app/connectors
     expose:
@@ -136,19 +136,19 @@ services:
       - coolify
     restart: unless-stopped
 
-  life-radar-matrix-bridge:
+  liferadar-matrix-bridge:
     build:
       context: .
       dockerfile: Dockerfile.matrix-bridge
-    container_name: life-radar-matrix-bridge
+    container_name: liferadar-matrix-bridge
     environment:
-      LIFE_RADAR_DB_HOST: "${LIFE_RADAR_DB_HOST}"
-      LIFE_RADAR_DB_PORT: "${LIFE_RADAR_DB_PORT}"
-      LIFE_RADAR_DB_NAME: "${LIFE_RADAR_DB_NAME}"
-      LIFE_RADAR_DB_USER: "${LIFE_RADAR_DB_USER}"
-      LIFE_RADAR_DB_PASSWORD: "${LIFE_RADAR_DB_PASSWORD}"
+      LIFERADAR_DB_HOST: "${LIFERADAR_DB_HOST}"
+      LIFERADAR_DB_PORT: "${LIFERADAR_DB_PORT}"
+      LIFERADAR_DB_NAME: "${LIFERADAR_DB_NAME}"
+      LIFERADAR_DB_USER: "${LIFERADAR_DB_USER}"
+      LIFERADAR_DB_PASSWORD: "${LIFERADAR_DB_PASSWORD}"
     volumes:
-      - life-radar-identity:/app/identity
+      - liferadar-identity:/app/identity
     expose:
       - "8010"
     extra_hosts:
@@ -172,13 +172,13 @@ volumes:
       type: none
       o: bind
       device: ${DATA_DIR:-./data/connectors}
-  life-radar-identity:
+  liferadar-identity:
     driver: local
     driver_opts:
       type: none
       o: bind
       device: ${DATA_DIR:-./data/identity}
-  life-radar-workspace:
+  liferadar-workspace:
     driver: local
     driver_opts:
       type: none

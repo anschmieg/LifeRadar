@@ -18,11 +18,11 @@ const authority = env('MSGRAPH_AUTHORITY', tenantId || 'common');
 const envRefreshToken = env('MSGRAPH_REFRESH_TOKEN');
 const metadataKey = 'msgraph_mail_sync';
 const authKey = 'msgraph_auth';
-const fixtureDir = env('LIFE_RADAR_MSGRAPH_FIXTURE_DIR');
+const fixtureDir = env('LIFERADAR_MSGRAPH_FIXTURE_DIR');
 const tokenRetryDelaysMs = [1000, 2000, 4000];
 
 if (!fixtureDir && (!clientId || !authority || !envRefreshToken)) {
-  console.log('life-radar msgraph sync skipped: credentials not configured');
+  console.log('liferadar msgraph sync skipped: credentials not configured');
   process.exit(0);
 }
 
@@ -124,7 +124,7 @@ async function acquireToken() {
         throw error;
       }
       const delayMs = tokenRetryDelaysMs[attempt];
-      console.warn(`life-radar msgraph token refresh transient failure; retrying in ${delayMs}ms`);
+      console.warn(`liferadar msgraph token refresh transient failure; retrying in ${delayMs}ms`);
       await sleep(delayMs);
     }
   }
@@ -254,14 +254,14 @@ while (pageUrl) {
     const isUnauthorized = message.includes('HTTP 401');
     const isDeltaCursorUrl = typeof pageUrl === 'string' && pageUrl.includes('$deltatoken=');
     if (isUnauthorized && !restartedFromInitialDelta) {
-      console.warn('life-radar msgraph delta cursor rejected; retrying from initial inbox delta');
+      console.warn('liferadar msgraph delta cursor rejected; retrying from initial inbox delta');
       restartedFromInitialDelta = true;
       pageUrl = initialDeltaUrl();
       deltaLink = null;
       continue;
     }
     if (isUnauthorized && isDeltaCursorUrl) {
-      console.warn('life-radar msgraph delta cursor still unauthorized after reset attempt');
+      console.warn('liferadar msgraph delta cursor still unauthorized after reset attempt');
     }
     throw error;
   }
@@ -323,4 +323,4 @@ setRuntimeMetadata(metadataKey, {
   updated_at: nowIso(),
 });
 
-console.log(`life-radar msgraph sync complete: upserted=${messageCount} removed=${removedCount}`);
+console.log(`liferadar msgraph sync complete: upserted=${messageCount} removed=${removedCount}`);

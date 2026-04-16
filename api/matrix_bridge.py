@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 
 MATRIX_SEND_BINARY = os.environ.get(
-    "LIFE_RADAR_MATRIX_SEND_BINARY", "/usr/local/bin/life-radar-matrix-rust-probe"
+    "LIFERADAR_MATRIX_SEND_BINARY", "/usr/local/bin/liferadar-matrix"
 )
 
 app = FastAPI(
@@ -38,9 +38,9 @@ async def health():
 @app.post("/send", response_model=MatrixSendResponse)
 async def send_message(request: MatrixSendRequest):
     env = os.environ.copy()
-    env["LIFE_RADAR_MATRIX_RUST_MODE"] = "send_message"
-    env["LIFE_RADAR_SEND_ROOM_ID"] = request.room_id
-    env["LIFE_RADAR_SEND_TEXT"] = request.content_text
+    env["LIFERADAR_MATRIX_RUST_MODE"] = "send_message"
+    env["LIFERADAR_SEND_ROOM_ID"] = request.room_id
+    env["LIFERADAR_SEND_TEXT"] = request.content_text
 
     try:
         proc = subprocess.run(

@@ -43,7 +43,7 @@ Options:
 }
 
 const HOMESERVER = (
-    process.env.LIFE_RADAR_MATRIX_HOMESERVER_URL
+    process.env.LIFERADAR_MATRIX_HOMESERVER_URL
     || values.homeserver
 ).replace(/\/$/, '');
 const OUTPUT_PATH = values.output || './matrix-session.json';

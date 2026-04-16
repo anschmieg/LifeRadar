@@ -3,11 +3,11 @@ FROM lukemathwalker/cargo-chef:latest-rust-1.88-bookworm AS cargo-chef
 WORKDIR /build
 
 FROM cargo-chef AS planner
-WORKDIR /build/matrix-rust-probe
-COPY matrix-rust-probe/Cargo.toml ./Cargo.toml
-COPY matrix-rust-probe/Cargo.lock ./Cargo.lock
-COPY matrix-rust-probe/src ./src
-RUN cargo chef prepare --recipe-path /build/recipe.json --bin life-radar-matrix-rust-probe
+WORKDIR /build/liferadar-matrix
+COPY liferadar-matrix/Cargo.toml ./Cargo.toml
+COPY liferadar-matrix/Cargo.lock ./Cargo.lock
+COPY liferadar-matrix/src ./src
+RUN cargo chef prepare --recipe-path /build/recipe.json --bin liferadar-matrix
 
 FROM cargo-chef AS rust-build
 
@@ -24,11 +24,11 @@ WORKDIR /build
 COPY --from=planner /build/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json --target-dir /build/target
 
-COPY matrix-rust-probe/ ./probe/
-RUN cargo build --release --bin life-radar-matrix-rust-probe --manifest-path /build/probe/Cargo.toml --target-dir /build/target \
-    && cp /build/target/release/life-radar-matrix-rust-probe /build/life-radar-matrix-rust-probe
+COPY liferadar-matrix/ ./probe/
+RUN cargo build --release --bin liferadar-matrix --manifest-path /build/probe/Cargo.toml --target-dir /build/target \
+    && cp /build/target/release/liferadar-matrix /build/liferadar-matrix
 
-RUN strip /build/life-radar-matrix-rust-probe 2>/dev/null || true
+RUN strip /build/liferadar-matrix 2>/dev/null || true
 
 FROM python:3.12-slim-bookworm AS builder
 
@@ -62,7 +62,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /app/api/ ./api/
-COPY --from=rust-build /build/life-radar-matrix-rust-probe /usr/local/bin/life-radar-matrix-rust-probe
+COPY --from=rust-build /build/liferadar-matrix /usr/local/bin/liferadar-matrix
 
 EXPOSE 8010
 

@@ -12,11 +12,11 @@ WORKDIR /build
 
 # ---- Stage 2: Rust dependency recipe ----
 FROM cargo-chef AS planner
-WORKDIR /build/matrix-rust-probe
-COPY matrix-rust-probe/Cargo.toml ./Cargo.toml
-COPY matrix-rust-probe/Cargo.lock ./Cargo.lock
-COPY matrix-rust-probe/src ./src
-RUN cargo chef prepare --recipe-path /build/recipe.json --bin life-radar-matrix-rust-probe
+WORKDIR /build/liferadar-matrix
+COPY liferadar-matrix/Cargo.toml ./Cargo.toml
+COPY liferadar-matrix/Cargo.lock ./Cargo.lock
+COPY liferadar-matrix/src ./src
+RUN cargo chef prepare --recipe-path /build/recipe.json --bin liferadar-matrix
 
 # ---- Stage 3: Rust build ----
 FROM cargo-chef AS rust-build
@@ -41,16 +41,16 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/build/target,sharing=locked \
     cargo chef cook --release --recipe-path recipe.json --target-dir /build/target
 
-COPY matrix-rust-probe/ ./probe/
+COPY liferadar-matrix/ ./probe/
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/build/target,sharing=locked <<EOF
-    cargo build --release --bin life-radar-matrix-rust-probe --manifest-path /build/probe/Cargo.toml --target-dir /build/target 2>&1
-    cp /build/target/release/life-radar-matrix-rust-probe /build/life-radar-matrix-rust-probe
+    cargo build --release --bin liferadar-matrix --manifest-path /build/probe/Cargo.toml --target-dir /build/target 2>&1
+    cp /build/target/release/liferadar-matrix /build/liferadar-matrix
 EOF
 
-RUN strip /build/life-radar-matrix-rust-probe 2>/dev/null || true
+RUN strip /build/liferadar-matrix 2>/dev/null || true
 
 
 # ---- Stage 2: Node.js runtime ----
@@ -71,22 +71,22 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 WORKDIR /app
 
 # Copy the pre-built Rust binary from Stage 1
-COPY --from=rust-build /build/life-radar-matrix-rust-probe /usr/local/bin/life-radar-matrix-rust-probe
+COPY --from=rust-build /build/liferadar-matrix /usr/local/bin/liferadar-matrix
 
 # Copy probe scripts (entrypoint is run-probes.sh)
-COPY bin/ /opt/life-radar/bin/
+COPY bin/ /opt/liferadar/bin/
 
 # Copy lib/ for Node.js runtime modules (runtime.mjs, etc.)
-COPY lib/ /opt/life-radar/lib/
+COPY lib/ /opt/liferadar/lib/
 
 # Copy schema for bootstrap
-COPY schema/schema.sql /opt/life-radar/schema.sql
+COPY schema/schema.sql /opt/liferadar/schema.sql
 
-RUN chmod +x /usr/local/bin/life-radar-matrix-rust-probe \
- && chmod +x /opt/life-radar/bin/*.sh \
- && chmod +x /opt/life-radar/bin/*.mjs
+RUN chmod +x /usr/local/bin/liferadar-matrix \
+ && chmod +x /opt/liferadar/bin/*.sh \
+ && chmod +x /opt/liferadar/bin/*.mjs
 
 # Identity + workspace volumes (bind-mounted at runtime)
 VOLUME ["/app/identity", "/app/workspace"]
 
-ENTRYPOINT ["/opt/life-radar/bin/run-probes.sh"]
+ENTRYPOINT ["/opt/liferadar/bin/run-probes.sh"]

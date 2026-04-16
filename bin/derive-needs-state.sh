@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${LIFE_RADAR_DB_HOST:=life-radar-db}"
-: "${LIFE_RADAR_DB_PORT:=5432}"
-: "${LIFE_RADAR_DB_NAME:=life_radar}"
-: "${LIFE_RADAR_DB_USER:=life_radar}"
-: "${LIFE_RADAR_DB_PASSWORD:=change-me-in-env}"
+: "${LIFERADAR_DB_HOST:=liferadar-db}"
+: "${LIFERADAR_DB_PORT:=5432}"
+: "${LIFERADAR_DB_NAME:=life_radar}"
+: "${LIFERADAR_DB_USER:=life_radar}"
+: "${LIFERADAR_DB_PASSWORD:=change-me-in-env}"
 
-export PGPASSWORD="$LIFE_RADAR_DB_PASSWORD"
+export PGPASSWORD="$LIFERADAR_DB_PASSWORD"
 
 psql \
-  --host "$LIFE_RADAR_DB_HOST" \
-  --port "$LIFE_RADAR_DB_PORT" \
-  --username "$LIFE_RADAR_DB_USER" \
-  --dbname "$LIFE_RADAR_DB_NAME" \
+  --host "$LIFERADAR_DB_HOST" \
+  --port "$LIFERADAR_DB_PORT" \
+  --username "$LIFERADAR_DB_USER" \
+  --dbname "$LIFERADAR_DB_NAME" \
   --set ON_ERROR_STOP=1 <<'SQL'
 with latest_message as (
   select distinct on (me.conversation_id)
@@ -262,4 +262,4 @@ set value = excluded.value,
     updated_at = now();
 SQL
 
-echo "life-radar needs-state derivation complete"
+echo "liferadar needs-state derivation complete"

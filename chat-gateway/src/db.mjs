@@ -22,11 +22,11 @@ export class GatewayDb {
   constructor({ logger }) {
     this.logger = logger;
     this.pool = new Pool({
-      host: env('LIFE_RADAR_DB_HOST', 'life-radar-db'),
-      port: Number.parseInt(env('LIFE_RADAR_DB_PORT', '5432'), 10),
-      database: env('LIFE_RADAR_DB_NAME', 'life_radar'),
-      user: env('LIFE_RADAR_DB_USER', 'life_radar'),
-      password: env('LIFE_RADAR_DB_PASSWORD', ''),
+      host: env('LIFERADAR_DB_HOST', 'liferadar-db'),
+      port: Number.parseInt(env('LIFERADAR_DB_PORT', '5432'), 10),
+      database: env('LIFERADAR_DB_NAME', 'life_radar'),
+      user: env('LIFERADAR_DB_USER', 'life_radar'),
+      password: env('LIFERADAR_DB_PASSWORD', ''),
       max: 6,
     });
   }
