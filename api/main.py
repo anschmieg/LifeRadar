@@ -447,8 +447,9 @@ async function poll() {{
 }}
 
 function clearInputs() {{
-  for (const id of ["phone_number","code","password"]) {{
-    document.getElementById(id).value = "";
+  for (const id of ["phone_number","code"]) {{
+    const el = document.getElementById(id);
+    if (el) el.value = "";
   }}
 }}
 
