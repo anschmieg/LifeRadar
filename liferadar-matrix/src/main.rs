@@ -158,6 +158,12 @@ struct ImportOutcome {
     total_count: usize,
 }
 
+#[derive(Debug)]
+struct E2eBackupOutcome {
+    status: &'static str,
+    detail: String,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 struct ImportMarker {
     source_size: u64,
@@ -1250,6 +1256,16 @@ async fn http_fetch_room_history(
 
 async fn try_sdk_ingest(cfg: &ProbeConfig) -> Result<String> {
     let (client, session_file) = build_client(cfg).await?;
+
+    // Phase B: Attempt to restore keys from homeserver E2E Backup first
+    // This may eliminate the need for Beeper key export entirely
+    let backup_restore_outcome = maybe_restore_e2e_backup(&client).await;
+    eprintln!(
+        "E2E Backup restore: status={}, detail={}",
+        backup_restore_outcome.status, backup_restore_outcome.detail
+    );
+
+    // Fallback: Import from Beeper/Element key export if E2E Backup didn't have keys
     let import_outcome = maybe_import_room_keys(cfg, &client).await?;
 
     let db = connect_postgres(
@@ -1334,6 +1350,14 @@ async fn try_sdk_ingest(cfg: &ProbeConfig) -> Result<String> {
         &format!("matrix-sdk-native:{selected_sync_source}"),
     )
     .await?;
+
+    // Phase B: Upload our keys to homeserver E2E Backup after sync
+    // This ensures we have a backup of our session keys
+    let backup_upload_outcome = ensure_e2e_backup(&client).await;
+    eprintln!(
+        "E2E Backup upload: status={}, detail={}",
+        backup_upload_outcome.status, backup_upload_outcome.detail
+    );
 
     let upsert_conversation = prepare_upsert_conversation(&db).await?;
     let upsert_event = prepare_upsert_event(&db).await?;
@@ -2152,6 +2176,130 @@ async fn maybe_import_room_keys(cfg: &ProbeConfig, client: &Client) -> Result<Im
         imported_count: result.imported_count,
         total_count: result.total_count,
     })
+}
+
+/// Attempts to restore E2E encryption keys from the homeserver's E2E Backup.
+/// This is called after restoring a session, before syncing.
+/// If successful, we can decrypt messages without needing a Beeper key export.
+async fn maybe_restore_e2e_backup(client: &Client) -> E2eBackupOutcome {
+    let backups = client.encryption().backups();
+
+    // Check if backups are enabled
+    if !backups.are_enabled().await {
+        return E2eBackupOutcome {
+            status: "not_enabled",
+            detail: "E2E Backup is not enabled for this client".to_string(),
+        };
+    }
+
+    // Check if a backup exists on the server
+    match backups.fetch_exists_on_server().await {
+        Ok(exists) if !exists => {
+            return E2eBackupOutcome {
+                status: "not_found",
+                detail: "No E2E Backup found on server".to_string(),
+            };
+        }
+        Err(err) => {
+            eprintln!("E2E Backup check failed (non-fatal): {}", err);
+            return E2eBackupOutcome {
+                status: "error",
+                detail: format!("E2E Backup check failed: {}", err),
+            };
+        }
+        _ => {}
+    }
+
+    // Download room keys from the backup for each joined room
+    let joined_rooms = client.joined_rooms();
+    let mut rooms_restored = 0;
+    let mut rooms_failed = 0;
+
+    for room in joined_rooms {
+        match backups.download_room_keys_for_room(room.room_id()).await {
+            Ok(()) => {
+                rooms_restored += 1;
+            }
+            Err(err) => {
+                eprintln!(
+                    "E2E Backup restore failed for room {}: {}",
+                    room.room_id(),
+                    err
+                );
+                rooms_failed += 1;
+            }
+        }
+    }
+
+    if rooms_restored > 0 {
+        eprintln!(
+            "E2E Backup restored: {} rooms succeeded, {} failed",
+            rooms_restored, rooms_failed
+        );
+        E2eBackupOutcome {
+            status: "restored",
+            detail: format!(
+                "Restored E2E Backup for {} rooms ({} failed)",
+                rooms_restored, rooms_failed
+            ),
+        }
+    } else if rooms_failed > 0 {
+        E2eBackupOutcome {
+            status: "restore_failed",
+            detail: format!("E2E Backup restore failed for all {} rooms", rooms_failed),
+        }
+    } else {
+        E2eBackupOutcome {
+            status: "no_rooms",
+            detail: "No joined rooms to restore keys for".to_string(),
+        }
+    }
+}
+
+/// Ensures this device's E2E encryption keys are backed up to the homeserver.
+/// This is called after syncing, so we have the latest session keys to upload.
+async fn ensure_e2e_backup(client: &Client) -> E2eBackupOutcome {
+    let backups = client.encryption().backups();
+
+    // Check if backups are enabled
+    if !backups.are_enabled().await {
+        // Try to create a backup if none exists
+        match backups.create().await {
+            Ok(()) => {
+                eprintln!("E2E Backup created successfully");
+                E2eBackupOutcome {
+                    status: "created",
+                    detail: "Created E2E Backup successfully".to_string(),
+                }
+            }
+            Err(err) => {
+                // Non-fatal — keys are still in the local store
+                eprintln!("E2E Backup creation failed (non-fatal): {}", err);
+                E2eBackupOutcome {
+                    status: "create_failed",
+                    detail: format!("E2E Backup creation failed: {}", err),
+                }
+            }
+        }
+    } else {
+        // Backup exists, wait for any pending uploads to complete
+        match backups.wait_for_steady_state().await {
+            Ok(()) => {
+                eprintln!("E2E Backup sync completed");
+                E2eBackupOutcome {
+                    status: "synced",
+                    detail: "E2E Backup synced successfully".to_string(),
+                }
+            }
+            Err(err) => {
+                eprintln!("E2E Backup sync wait failed (non-fatal): {}", err);
+                E2eBackupOutcome {
+                    status: "sync_failed",
+                    detail: format!("E2E Backup sync wait failed: {}", err),
+                }
+            }
+        }
+    }
 }
 
 async fn sample_recent_messages(client: &Client) -> DecryptionSample {
