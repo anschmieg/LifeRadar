@@ -27,7 +27,7 @@ yarn-debug.log*
 /target/
 **/target/
 Cargo.lock
-!matrix-rust-probe/Cargo.lock
+!liferadar-matrix/Cargo.lock
 matrix-rust-probe/target/
 
 # IDE
