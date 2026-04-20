@@ -1,14 +1,7 @@
-# ============================================================
-# LifeRadar Worker
-# Node.js probe orchestrator + Rust E2EE Matrix probe
-# ============================================================
-
-# ---- Stage 1: Rust dependency planner ----
 FROM lukemathwalker/cargo-chef:latest-rust-1.88-bookworm AS cargo-chef
 
 WORKDIR /build
 
-# ---- Stage 2: Rust dependency recipe ----
 FROM cargo-chef AS planner
 WORKDIR /build/liferadar-matrix
 COPY liferadar-matrix/Cargo.toml ./Cargo.toml
@@ -16,23 +9,21 @@ COPY liferadar-matrix/Cargo.lock ./Cargo.lock
 COPY liferadar-matrix/src ./src
 RUN cargo chef prepare --recipe-path /build/recipe.json --bin liferadar-matrix
 
-# ---- Stage 3: Rust build ----
 FROM cargo-chef AS rust-build
-
-ARG TARGETARCH=amd64
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
-    pkg-config \
-    libssl-dev \
-    libsqlite3-dev \
-    libsasl2-dev \
     cmake \
+    libsasl2-dev \
+    libsqlite3-dev \
+    libssl-dev \
+    pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
+
 COPY --from=planner /build/recipe.json recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
@@ -40,51 +31,77 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cargo chef cook --release --recipe-path recipe.json --target-dir /build/target
 
 COPY liferadar-matrix/ ./probe/
-
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,target=/build/target,sharing=locked <<EOF
-    cargo build --release --bin liferadar-matrix --manifest-path /build/probe/Cargo.toml --target-dir /build/target 2>&1
-    cp /build/target/release/liferadar-matrix /build/liferadar-matrix
-EOF
+    --mount=type=cache,target=/build/target,sharing=locked \
+    cargo build --release --bin liferadar-matrix --manifest-path /build/probe/Cargo.toml --target-dir /build/target \
+    && cp /build/target/release/liferadar-matrix /build/liferadar-matrix \
+    && strip /build/liferadar-matrix 2>/dev/null || true
 
-RUN strip /build/liferadar-matrix 2>/dev/null || true
+FROM python:3.12-slim-bookworm AS matrix-bridge-builder
 
+WORKDIR /app
 
-# ---- Stage 2: Node.js runtime ----
-FROM node:22-bookworm-slim
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_DEFAULT_TIMEOUT=120 \
+    VIRTUAL_ENV=/opt/venv \
+    PATH=/opt/venv/bin:$PATH
 
-ARG TARGETARCH=amd64
+RUN python -m venv "$VIRTUAL_ENV"
+
+COPY api/requirements.bridge.txt .
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-compile -r requirements.bridge.txt
+
+COPY api/matrix_bridge.py ./api/matrix_bridge.py
+
+FROM python:3.12-slim-bookworm AS matrix-bridge-runtime
+
+WORKDIR /app
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONUNBUFFERED=1 \
+    VIRTUAL_ENV=/opt/venv \
+    PATH=/opt/venv/bin:$PATH
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
-    postgresql-client \
+    ca-certificates \
+    libsqlite3-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=matrix-bridge-builder /opt/venv /opt/venv
+COPY --from=matrix-bridge-builder /app/api/ ./api/
+COPY --from=rust-build /build/liferadar-matrix /usr/local/bin/liferadar-matrix
+
+EXPOSE 8010
+
+CMD ["uvicorn", "api.matrix_bridge:app", "--host", "0.0.0.0", "--port", "8010"]
+
+FROM node:22-bookworm-slim AS worker-runtime
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     jq \
     libsqlite3-0 \
+    postgresql-client \
     sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy the pre-built Rust binary from Stage 1
 COPY --from=rust-build /build/liferadar-matrix /usr/local/bin/liferadar-matrix
-
-# Copy probe scripts (entrypoint is run-probes.sh)
 COPY bin/ /opt/liferadar/bin/
-
-# Copy lib/ for Node.js runtime modules (runtime.mjs, etc.)
 COPY lib/ /opt/liferadar/lib/
-
-# Copy schema for bootstrap
 COPY schema/schema.sql /opt/liferadar/schema.sql
 
 RUN chmod +x /usr/local/bin/liferadar-matrix \
  && chmod +x /opt/liferadar/bin/*.sh \
  && chmod +x /opt/liferadar/bin/*.mjs
 
-# Identity + workspace volumes (bind-mounted at runtime)
 VOLUME ["/app/identity", "/app/workspace"]
 
 ENTRYPOINT ["/opt/liferadar/bin/run-probes.sh"]

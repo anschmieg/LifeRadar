@@ -7,6 +7,9 @@ set -euo pipefail
 : "${LIFERADAR_DB_USER:=life_radar}"
 : "${LIFERADAR_DB_PASSWORD:=change-me-in-env}"
 : "${LIFERADAR_MATRIX_ENABLED:=true}"
+: "${LIFERADAR_MATRIX_LEGACY_IMPORT_ENABLED:=true}"
+: "${LIFERADAR_MSGRAPH_ENABLED:=true}"
+: "${LIFERADAR_GOOGLE_CALENDAR_ENABLED:=true}"
 
 export PGPASSWORD="$LIFERADAR_DB_PASSWORD"
 SCHEMA_PATH="/opt/liferadar/schema.sql"
@@ -49,12 +52,16 @@ psql \
   --set ON_ERROR_STOP=1 \
   --file "$SCHEMA_PATH"
 
-if [[ "${LIFERADAR_MATRIX_ENABLED,,}" != "false" ]]; then
+if [[ "${LIFERADAR_MATRIX_ENABLED,,}" != "false" && "${LIFERADAR_MATRIX_LEGACY_IMPORT_ENABLED,,}" != "false" ]]; then
   /opt/liferadar/bin/backfill-matrix-history.sh || true
   /opt/liferadar/bin/prune-matrix-noise-events.sh || true
 fi
-/opt/liferadar/bin/graph-sync-mail.mjs || true
-/opt/liferadar/bin/google-calendar-ingest.mjs || true
+if [[ "${LIFERADAR_MSGRAPH_ENABLED,,}" != "false" ]]; then
+  /opt/liferadar/bin/graph-sync-mail.mjs || true
+fi
+if [[ "${LIFERADAR_GOOGLE_CALENDAR_ENABLED,,}" != "false" ]]; then
+  /opt/liferadar/bin/google-calendar-ingest.mjs || true
+  /opt/liferadar/bin/google-calendar-reconcile.mjs || true
+fi
 /opt/liferadar/bin/derive-needs-state.sh || true
 /opt/liferadar/bin/extract-memory.mjs || true
-/opt/liferadar/bin/google-calendar-reconcile.mjs || true

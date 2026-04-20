@@ -21,12 +21,12 @@ from hypercorn.asyncio import serve
 import asyncio
 
 # LifeRadar API base URL — use host.docker.internal to reach API container
-LIFE_RADAR_API_URL = os.environ.get(
-    "LIFE_RADAR_API_URL",
+LIFERADAR_API_URL = os.environ.get(
+    "LIFERADAR_API_URL",
     "http://host.docker.internal:8000"
 )
-LIFE_RADAR_PUBLIC_API_URL = os.environ.get("LIFE_RADAR_PUBLIC_API_URL", "").strip()
-LIFE_RADAR_API_KEY = os.environ.get("LIFE_RADAR_API_KEY", "").strip()
+LIFERADAR_PUBLIC_API_URL = os.environ.get("LIFERADAR_PUBLIC_API_URL", "").strip()
+LIFERADAR_API_KEY = os.environ.get("LIFERADAR_API_KEY", "").strip()
 
 APP_NAME = "liferadar-mcp"
 VERSION = "1.0.0"
@@ -173,7 +173,7 @@ def _normalize_api_response(data: Any) -> list[dict]:
 
 async def _get_json(url: str, params: dict | None = None) -> list[dict]:
     async with httpx.AsyncClient(timeout=30.0) as client:
-        headers = {"x-api-key": LIFE_RADAR_API_KEY} if LIFE_RADAR_API_KEY else {}
+        headers = {"x-api-key": LIFERADAR_API_KEY} if LIFERADAR_API_KEY else {}
         response = await client.get(url, params=params or {}, headers=headers)
         response.raise_for_status()
         return _normalize_api_response(response.json())
@@ -182,10 +182,10 @@ async def _get_json(url: str, params: dict | None = None) -> list[dict]:
 async def call_api(path: str, params: dict | None = None) -> list[dict]:
     """Make a GET request to the LifeRadar API and return parsed JSON."""
     path = path.lstrip("/")
-    internal_url = f"{LIFE_RADAR_API_URL.rstrip('/')}/{path}"
+    internal_url = f"{LIFERADAR_API_URL.rstrip('/')}/{path}"
     public_url = (
-        f"{LIFE_RADAR_PUBLIC_API_URL.rstrip('/')}/{path}"
-        if LIFE_RADAR_PUBLIC_API_URL
+        f"{LIFERADAR_PUBLIC_API_URL.rstrip('/')}/{path}"
+        if LIFERADAR_PUBLIC_API_URL
         else ""
     )
     primary_url = public_url or internal_url
@@ -212,10 +212,10 @@ async def call_api(path: str, params: dict | None = None) -> list[dict]:
 
 async def call_api_post(path: str, body: dict | None = None) -> list[dict]:
     """Make a POST request to the LifeRadar API and return parsed JSON."""
-    url = f"{LIFE_RADAR_API_URL.rstrip('/')}/{path.lstrip('/')}"
+    url = f"{LIFERADAR_API_URL.rstrip('/')}/{path.lstrip('/')}"
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
-            headers = {"x-api-key": LIFE_RADAR_API_KEY} if LIFE_RADAR_API_KEY else {}
+            headers = {"x-api-key": LIFERADAR_API_KEY} if LIFERADAR_API_KEY else {}
             response = await client.post(url, json=body or {}, headers=headers)
             response.raise_for_status()
             data = response.json()

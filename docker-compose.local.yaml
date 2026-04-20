@@ -1,0 +1,178 @@
+services:
+  liferadar-db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: "${LIFERADAR_DB_NAME:-life_radar}"
+      POSTGRES_USER: "${LIFERADAR_DB_USER:-life_radar}"
+      POSTGRES_PASSWORD: "${LIFERADAR_DB_PASSWORD:-localdev-password}"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${LIFERADAR_DB_USER:-life_radar} -d ${LIFERADAR_DB_NAME:-life_radar}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    ports:
+      - "${LIFERADAR_DB_LOCAL_PORT:-15432}:5432"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  liferadar-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    environment:
+      LIFERADAR_DB_HOST: liferadar-db
+      LIFERADAR_DB_PORT: 5432
+      LIFERADAR_DB_NAME: "${LIFERADAR_DB_NAME:-life_radar}"
+      LIFERADAR_DB_USER: "${LIFERADAR_DB_USER:-life_radar}"
+      LIFERADAR_DB_PASSWORD: "${LIFERADAR_DB_PASSWORD:-localdev-password}"
+      LIFERADAR_API_KEY: "${LIFERADAR_API_KEY:-localdev-shared-secret}"
+      LIFERADAR_MATRIX_BRIDGE_URL: http://liferadar-matrix-bridge:8010
+      LIFERADAR_CHAT_GATEWAY_URL: http://liferadar-chat-gateway:8020
+      LIFERADAR_MATRIX_ENABLED: "${LIFERADAR_MATRIX_ENABLED:-true}"
+      LIFERADAR_MATRIX_HOMESERVER_URL: "${LIFERADAR_MATRIX_HOMESERVER_URL:-}"
+      MATRIX_RUST_SESSION_PATH: /app/identity/matrix-session.json
+      MATRIX_RUST_STORE: /app/identity/matrix-rust-sdk-store
+    depends_on:
+      liferadar-db:
+        condition: service_healthy
+    ports:
+      - "${LIFERADAR_API_PORT:-18000}:8000"
+    volumes:
+      - ./data/identity:/app/identity
+    restart: unless-stopped
+
+  liferadar-chat-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.chat-gateway
+    profiles: ["extras"]
+    environment:
+      LIFERADAR_DB_HOST: liferadar-db
+      LIFERADAR_DB_PORT: 5432
+      LIFERADAR_DB_NAME: "${LIFERADAR_DB_NAME:-life_radar}"
+      LIFERADAR_DB_USER: "${LIFERADAR_DB_USER:-life_radar}"
+      LIFERADAR_DB_PASSWORD: "${LIFERADAR_DB_PASSWORD:-localdev-password}"
+      LIFERADAR_CONNECTOR_SESSION_DIR: /app/connectors
+      LIFERADAR_CHAT_GATEWAY_PORT: 8020
+      LIFERADAR_TELEGRAM_ENABLED: "${LIFERADAR_TELEGRAM_ENABLED:-false}"
+      LIFERADAR_WHATSAPP_ENABLED: "${LIFERADAR_WHATSAPP_ENABLED:-false}"
+      LIFERADAR_WHATSAPP_UNOFFICIAL_ALLOWED: "${LIFERADAR_WHATSAPP_UNOFFICIAL_ALLOWED:-false}"
+      TELEGRAM_API_ID: "${TELEGRAM_API_ID:-}"
+      TELEGRAM_API_HASH: "${TELEGRAM_API_HASH:-}"
+      LIFERADAR_CONNECTOR_BACKFILL_LIMIT_PER_CHAT: "${LIFERADAR_CONNECTOR_BACKFILL_LIMIT_PER_CHAT:-2000}"
+    depends_on:
+      liferadar-db:
+        condition: service_healthy
+    ports:
+      - "${LIFERADAR_CHAT_GATEWAY_PORT_PUBLIC:-18020}:8020"
+    volumes:
+      - ./data/connectors:/app/connectors
+    restart: unless-stopped
+
+  liferadar-matrix-bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile.matrix-services
+      target: matrix-bridge-runtime
+    environment:
+      LIFERADAR_DB_HOST: liferadar-db
+      LIFERADAR_DB_PORT: 5432
+      LIFERADAR_DB_NAME: "${LIFERADAR_DB_NAME:-life_radar}"
+      LIFERADAR_DB_USER: "${LIFERADAR_DB_USER:-life_radar}"
+      LIFERADAR_DB_PASSWORD: "${LIFERADAR_DB_PASSWORD:-localdev-password}"
+      MATRIX_RUST_SESSION_PATH: /app/identity/matrix-session.json
+      MATRIX_RUST_STORE: /app/identity/matrix-rust-sdk-store
+      MATRIX_SECRETS_BUNDLE_PATH: /app/identity/matrix-secrets-bundle.json
+      MATRIX_ROOM_KEYS_PATH: /app/identity/matrix-e2e-keys.txt
+      MATRIX_ROOM_KEYS_PASSPHRASE_PATH: /app/identity/.e2e-keys-passphrase
+      MATRIX_RECOVERY_PASSPHRASE_PATH: /app/identity/.e2e-keys-passphrase
+      MATRIX_RUST_KEY_IMPORT_MARKER: /app/identity/matrix-rust-sdk-store/room-key-import-marker.json
+      LIFERADAR_MATRIX_KEY_IMPORT_ENABLED: "${LIFERADAR_MATRIX_KEY_IMPORT_ENABLED:-false}"
+    depends_on:
+      liferadar-db:
+        condition: service_healthy
+    ports:
+      - "${LIFERADAR_MATRIX_BRIDGE_PORT:-18010}:8010"
+    volumes:
+      - ./data/identity:/app/identity
+    restart: unless-stopped
+
+  liferadar-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.matrix-services
+      target: worker-runtime
+    environment:
+      LIFERADAR_DB_HOST: liferadar-db
+      LIFERADAR_DB_PORT: 5432
+      LIFERADAR_DB_NAME: "${LIFERADAR_DB_NAME:-life_radar}"
+      LIFERADAR_DB_USER: "${LIFERADAR_DB_USER:-life_radar}"
+      LIFERADAR_DB_PASSWORD: "${LIFERADAR_DB_PASSWORD:-localdev-password}"
+      MATRIX_SESSION_PATH: /app/identity/matrix-session.json
+      MATRIX_RUST_SESSION_PATH: /app/identity/matrix-session.json
+      MATRIX_RUST_STORE: /app/identity/matrix-rust-sdk-store
+      MATRIX_SECRETS_BUNDLE_PATH: /app/identity/matrix-secrets-bundle.json
+      MATRIX_ROOM_KEYS_PATH: /app/identity/matrix-e2e-keys.txt
+      MATRIX_ROOM_KEYS_PASSPHRASE_PATH: /app/identity/.e2e-keys-passphrase
+      MATRIX_RECOVERY_PASSPHRASE_PATH: /app/identity/.e2e-keys-passphrase
+      MATRIX_RUST_KEY_IMPORT_MARKER: /app/identity/matrix-rust-sdk-store/room-key-import-marker.json
+      LIFERADAR_MATRIX_KEY_IMPORT_ENABLED: "${LIFERADAR_MATRIX_KEY_IMPORT_ENABLED:-false}"
+      LIFERADAR_MATRIX_RUST_CANDIDATE_ID: "${LIFERADAR_MATRIX_RUST_CANDIDATE_ID:-matrix-rust-sdk}"
+      LIFERADAR_MATRIX_RUST_CANDIDATE_TYPE: "${LIFERADAR_MATRIX_RUST_CANDIDATE_TYPE:-matrix-native}"
+      LIFERADAR_MATRIX_RUST_TIMEOUT_SEC: "${LIFERADAR_MATRIX_RUST_TIMEOUT_SEC:-20}"
+      LIFERADAR_MATRIX_RUST_RECOVER_HTTP_ON_FAILURE: "${LIFERADAR_MATRIX_RUST_RECOVER_HTTP_ON_FAILURE:-0}"
+      LIFERADAR_MATRIX_ENABLED: "${LIFERADAR_MATRIX_ENABLED:-true}"
+      LIFERADAR_MATRIX_HOMESERVER_URL: "${LIFERADAR_MATRIX_HOMESERVER_URL:-}"
+      LIFERADAR_MATRIX_LEGACY_IMPORT_ENABLED: "${LIFERADAR_MATRIX_LEGACY_IMPORT_ENABLED:-false}"
+      LIFERADAR_MSGRAPH_ENABLED: "${LIFERADAR_MSGRAPH_ENABLED:-false}"
+      LIFERADAR_GOOGLE_CALENDAR_ENABLED: "${LIFERADAR_GOOGLE_CALENDAR_ENABLED:-false}"
+      MSGRAPH_CLIENT_ID: "${MSGRAPH_CLIENT_ID:-}"
+      MSGRAPH_CLIENT_SECRET: "${MSGRAPH_CLIENT_SECRET:-}"
+      MSGRAPH_TENANT_ID: "${MSGRAPH_TENANT_ID:-common}"
+      MSGRAPH_REFRESH_TOKEN: "${MSGRAPH_REFRESH_TOKEN:-}"
+      GOOGLE_CALENDAR_CLIENT_ID: "${GOOGLE_CALENDAR_CLIENT_ID:-}"
+      GOOGLE_CALENDAR_CLIENT_SECRET: "${GOOGLE_CALENDAR_CLIENT_SECRET:-}"
+      GOOGLE_CALENDAR_REFRESH_TOKEN: "${GOOGLE_CALENDAR_REFRESH_TOKEN:-}"
+      GOOGLE_CALENDAR_ID: "${GOOGLE_CALENDAR_ID:-primary}"
+      LIFERADAR_PROBE_INTERVAL_SEC: "${LIFERADAR_PROBE_INTERVAL_SEC:-300}"
+    depends_on:
+      liferadar-db:
+        condition: service_healthy
+    volumes:
+      - ./data/identity:/app/identity
+      - ./data/workspace:/app/workspace
+    restart: unless-stopped
+
+  liferadar-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp
+    profiles: ["extras"]
+    environment:
+      LIFERADAR_DB_HOST: liferadar-db
+      LIFERADAR_DB_PORT: 5432
+      LIFERADAR_DB_NAME: "${LIFERADAR_DB_NAME:-life_radar}"
+      LIFERADAR_DB_USER: "${LIFERADAR_DB_USER:-life_radar}"
+      LIFERADAR_DB_PASSWORD: "${LIFERADAR_DB_PASSWORD:-localdev-password}"
+      LIFERADAR_API_URL: http://liferadar-api:8000
+      LIFERADAR_PUBLIC_API_URL: "${LIFERADAR_PUBLIC_API_URL:-}"
+      LIFERADAR_API_KEY: "${LIFERADAR_API_KEY:-localdev-shared-secret}"
+      OUTLOOK_MCP_ENABLED: "${OUTLOOK_MCP_ENABLED:-false}"
+      MSGRAPH_CLIENT_ID: "${MSGRAPH_CLIENT_ID:-}"
+      MSGRAPH_CLIENT_SECRET: "${MSGRAPH_CLIENT_SECRET:-}"
+      MSGRAPH_TENANT_ID: "${MSGRAPH_TENANT_ID:-common}"
+    depends_on:
+      liferadar-api:
+        condition: service_started
+      liferadar-chat-gateway:
+        condition: service_started
+    ports:
+      - "${LIFERADAR_MCP_PORT:-18090}:8090"
+    volumes:
+      - ./data/outlook-token-cache:/app/outlook-token-cache
+    restart: unless-stopped

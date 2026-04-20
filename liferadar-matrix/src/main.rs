@@ -2,7 +2,7 @@ mod adapter;
 
 use std::{
     collections::{HashMap, HashSet},
-    env, fs,
+    env, fs, io,
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -12,23 +12,40 @@ use adapter::{
     EventCountSummary, IngestEvent,
 };
 use anyhow::{Context, Result};
+use futures_util::StreamExt;
 use matrix_sdk::{
     authentication::matrix::MatrixSession,
     config::SyncSettings,
+    encryption::{
+        verification::{SasState, Verification, VerificationRequestState},
+        BackupDownloadStrategy, EncryptionSettings,
+    },
     room::MessagesOptions,
     ruma::{
-        events::room::message::RoomMessageEventContent, uint, OwnedDeviceId, OwnedRoomId,
-        OwnedUserId,
+        events::{
+            key::verification::VerificationMethod,
+            room::message::RoomMessageEventContent,
+        },
+        uint, OwnedDeviceId, OwnedRoomId, OwnedUserId,
     },
     store::RoomLoadSettings,
     Client, RoomMemberships, SessionMeta, SessionTokens,
 };
+use matrix_sdk_crypto::{
+    OlmMachine,
+    types::SecretsBundle,
+};
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
+use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    sync::mpsc,
+    task::JoinSet,
+};
 use tokio_postgres::{Client as PgClient, NoTls};
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct SessionFile {
     access_token: String,
     refresh_token: Option<String>,
@@ -36,6 +53,9 @@ struct SessionFile {
     device_id: String,
     homeserver: String,
     next_batch: Option<String>,
+    expires_at: Option<String>,
+    expires_in: Option<u64>,
+    saved_at: Option<String>,
 }
 
 struct ProbeConfig {
@@ -51,6 +71,10 @@ struct ProbeConfig {
     key_export_path: PathBuf,
     key_passphrase_path: PathBuf,
     key_import_marker_path: PathBuf,
+    key_import_enabled: bool,
+    secrets_bundle_path: Option<PathBuf>,
+    recovery_key_path: Option<PathBuf>,
+    recovery_passphrase_path: Option<PathBuf>,
     report_dir: PathBuf,
     timeout_seconds: u64,
     mode: String,
@@ -93,6 +117,12 @@ impl ProbeConfig {
                 "MATRIX_RUST_KEY_IMPORT_MARKER",
                 "/app/identity/matrix-rust-sdk-store/room-key-import-marker.json",
             )),
+            key_import_enabled: env_flag("LIFERADAR_MATRIX_KEY_IMPORT_ENABLED", true),
+            secrets_bundle_path: env::var("MATRIX_SECRETS_BUNDLE_PATH").ok().map(PathBuf::from),
+            recovery_key_path: env::var("MATRIX_RECOVERY_KEY_PATH").ok().map(PathBuf::from),
+            recovery_passphrase_path: env::var("MATRIX_RECOVERY_PASSPHRASE_PATH")
+                .ok()
+                .map(PathBuf::from),
             report_dir: PathBuf::from(env_var(
                 "LIFERADAR_REPORT_DIR",
                 "/app/workspace/liferadar/reports",
@@ -158,8 +188,21 @@ struct ImportOutcome {
     total_count: usize,
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 struct E2eBackupOutcome {
+    status: &'static str,
+    detail: String,
+}
+
+#[derive(Debug)]
+struct SecretRecoveryOutcome {
+    status: &'static str,
+    detail: String,
+}
+
+#[derive(Debug)]
+struct OwnDeviceVerificationOutcome {
     status: &'static str,
     detail: String,
 }
@@ -172,6 +215,14 @@ struct ImportMarker {
     imported_count: usize,
     total_count: usize,
     imported_at: String,
+}
+
+#[derive(Debug, Clone)]
+struct BridgeTarget {
+    state_key: String,
+    protocol_id: Option<String>,
+    channel_id: Option<String>,
+    display_name: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -224,6 +275,13 @@ struct UndecryptedStats {
 struct SendMessageResult {
     status: &'static str,
     event_id: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum VerificationCommand {
+    Confirm,
+    Reject,
+    Cancel,
 }
 
 const MATRIX_SYNC_CHECKPOINT_KEY: &str = "matrix_sync_checkpoint";
@@ -280,9 +338,16 @@ async fn main() -> Result<()> {
         );
         return Ok(());
     }
+    if cfg.mode == "verify_device_interactive" {
+        run_interactive_device_verification(&cfg).await?;
+        return Ok(());
+    }
     if cfg.mode == "key_import" {
         let (client, _session) = build_client(&cfg).await?;
+        let recovery_outcome = maybe_restore_secret_storage(&cfg, &client).await?;
         let import_outcome = maybe_import_room_keys(&cfg, &client).await?;
+        println!("secret_recovery_status={}", recovery_outcome.status);
+        println!("secret_recovery_detail={}", recovery_outcome.detail);
         println!("key_import_status={}", import_outcome.status);
         println!("key_import_detail={}", import_outcome.detail);
         println!("imported_count={}", import_outcome.imported_count);
@@ -299,14 +364,23 @@ async fn main() -> Result<()> {
         println!("sampled_rooms={}", sample.sampled_rooms);
         println!("sampled_events={}", sample.sampled_events);
         println!("decrypted_text_events={}", sample.decrypted_text_events);
-        println!("decrypted_non_text_events={}", sample.decrypted_non_text_events);
+        println!(
+            "decrypted_non_text_events={}",
+            sample.decrypted_non_text_events
+        );
         println!("undecrypted_events={}", sample.undecrypted_events);
         println!("plain_text_events={}", sample.plain_text_events);
 
         if sample.decrypted_text_events > 0 {
-            println!("\n✅ SUCCESS: {} messages decrypted successfully", sample.decrypted_text_events);
+            println!(
+                "\n✅ SUCCESS: {} messages decrypted successfully",
+                sample.decrypted_text_events
+            );
         } else if sample.undecrypted_events > 0 {
-            println!("\n❌ FAIL: {} events remain undecrypted after key import", sample.undecrypted_events);
+            println!(
+                "\n❌ FAIL: {} events remain undecrypted after key import",
+                sample.undecrypted_events
+            );
         } else {
             println!("\n⚠️  WARN: no encrypted messages found in sampled rooms");
         }
@@ -328,6 +402,7 @@ async fn main() -> Result<()> {
 async fn run_probe(cfg: &ProbeConfig) -> Result<ProbeResult> {
     let (client, session_file) = build_client(cfg).await?;
 
+    let recovery_outcome = maybe_restore_secret_storage(cfg, &client).await?;
     let import_outcome = maybe_import_room_keys(cfg, &client).await?;
 
     let mut settings = SyncSettings::default().timeout(Duration::from_secs(cfg.timeout_seconds));
@@ -340,6 +415,11 @@ async fn run_probe(cfg: &ProbeConfig) -> Result<ProbeResult> {
         .sync_once(settings)
         .await
         .context("matrix rust sync_once failed")?;
+    persist_client_session(
+        &cfg.session_path,
+        &client,
+        Some(response.next_batch.clone()),
+    )?;
     let latency_ms = i32::try_from(start.elapsed().as_millis()).unwrap_or(i32::MAX);
 
     let joined_room_count = client.joined_rooms().len() as i64;
@@ -405,6 +485,8 @@ async fn run_probe(cfg: &ProbeConfig) -> Result<ProbeResult> {
         "room_key_import_detail": import_outcome.detail,
         "room_key_imported_count": import_outcome.imported_count,
         "room_key_total_count": import_outcome.total_count,
+        "secret_recovery_status": recovery_outcome.status,
+        "secret_recovery_detail": recovery_outcome.detail,
         "next_batch_known": next_batch_known,
         "sampled_rooms": decrypt_sample.sampled_rooms,
         "sampled_events": decrypt_sample.sampled_events,
@@ -420,7 +502,7 @@ async fn run_probe(cfg: &ProbeConfig) -> Result<ProbeResult> {
     .to_string();
 
     let report_body = format!(
-        "# Matrix Candidate Report\n\n- observed_at: {}\n- candidate_id: {}\n- candidate_type: {}\n- status: {}\n- notes: {}\n- latency_ms: {}\n- freshness_seconds: {}\n- joined_rooms: {}\n- invite_rooms: {}\n- knocked_rooms: {}\n- presence_events: {}\n- to_device_events: {}\n- room_key_import_status: {}\n- room_key_import_detail: {}\n- room_key_imported_count: {}\n- room_key_total_count: {}\n- sampled_rooms: {}\n- sampled_events: {}\n- decrypted_text_events: {}\n- decrypted_non_text_events: {}\n- undecrypted_events: {}\n- plain_text_events: {}\n- unsupported_custom_events: {}\n- session_path: {}\n- store_path: {}\n- homeserver: {}\n{}\n{}\n",
+        "# Matrix Candidate Report\n\n- observed_at: {}\n- candidate_id: {}\n- candidate_type: {}\n- status: {}\n- notes: {}\n- latency_ms: {}\n- freshness_seconds: {}\n- joined_rooms: {}\n- invite_rooms: {}\n- knocked_rooms: {}\n- presence_events: {}\n- to_device_events: {}\n- room_key_import_status: {}\n- room_key_import_detail: {}\n- secret_recovery_status: {}\n- secret_recovery_detail: {}\n- room_key_imported_count: {}\n- room_key_total_count: {}\n- sampled_rooms: {}\n- sampled_events: {}\n- decrypted_text_events: {}\n- decrypted_non_text_events: {}\n- undecrypted_events: {}\n- plain_text_events: {}\n- unsupported_custom_events: {}\n- session_path: {}\n- store_path: {}\n- homeserver: {}\n{}\n{}\n",
         iso_now(),
         cfg.candidate_id,
         cfg.candidate_type,
@@ -435,6 +517,8 @@ async fn run_probe(cfg: &ProbeConfig) -> Result<ProbeResult> {
         to_device_count,
         import_outcome.status,
         import_outcome.detail,
+        recovery_outcome.status,
+        recovery_outcome.detail,
         import_outcome.imported_count,
         import_outcome.total_count,
         decrypt_sample.sampled_rooms,
@@ -467,11 +551,13 @@ async fn run_probe(cfg: &ProbeConfig) -> Result<ProbeResult> {
 
 async fn inspect_recent_rooms(cfg: &ProbeConfig) -> Result<RecentRoomsReport> {
     let (client, session_file) = build_client(cfg).await?;
+    let _ = maybe_restore_secret_storage(cfg, &client).await?;
     maybe_import_room_keys(cfg, &client).await?;
 
     let sync_attempts = build_sync_attempts(None, session_file.next_batch.clone());
     let mut last_sync_error = None;
     let mut synced = false;
+    let mut latest_next_batch = None;
 
     for (source, token) in sync_attempts {
         let mut settings =
@@ -481,8 +567,9 @@ async fn inspect_recent_rooms(cfg: &ProbeConfig) -> Result<RecentRoomsReport> {
         }
 
         match client.sync_once(settings).await {
-            Ok(_) => {
+            Ok(sync_response) => {
                 eprintln!("inspect_recent sync_once succeeded via {source}");
+                latest_next_batch = Some(sync_response.next_batch.clone());
                 synced = true;
                 break;
             }
@@ -499,6 +586,7 @@ async fn inspect_recent_rooms(cfg: &ProbeConfig) -> Result<RecentRoomsReport> {
             last_sync_error.unwrap_or_else(|| "no sync attempt executed".to_string())
         ));
     }
+    persist_client_session(&cfg.session_path, &client, latest_next_batch)?;
 
     let mut rooms = Vec::new();
 
@@ -610,11 +698,13 @@ async fn inspect_room(cfg: &ProbeConfig) -> Result<InspectRoomReport> {
         .context("invalid LIFERADAR_MATRIX_RUST_ROOM_ID")?;
 
     let (client, session_file) = build_client(cfg).await?;
+    let _ = maybe_restore_secret_storage(cfg, &client).await?;
     maybe_import_room_keys(cfg, &client).await?;
 
     let sync_attempts = build_sync_attempts(None, session_file.next_batch.clone());
     let mut last_sync_error = None;
     let mut sync_source = "none".to_string();
+    let mut latest_next_batch = None;
 
     for (source, token) in sync_attempts {
         let mut settings =
@@ -624,8 +714,9 @@ async fn inspect_room(cfg: &ProbeConfig) -> Result<InspectRoomReport> {
         }
 
         match client.sync_once(settings).await {
-            Ok(_) => {
+            Ok(sync_response) => {
                 sync_source = source.to_string();
+                latest_next_batch = Some(sync_response.next_batch.clone());
                 break;
             }
             Err(err) => {
@@ -641,6 +732,7 @@ async fn inspect_room(cfg: &ProbeConfig) -> Result<InspectRoomReport> {
             last_sync_error.unwrap_or_else(|| "no sync attempt executed".to_string())
         ));
     }
+    persist_client_session(&cfg.session_path, &client, latest_next_batch)?;
 
     let joined_room_count = client.joined_rooms().len();
     let known_room_count = client.rooms().len();
@@ -878,6 +970,7 @@ async fn ingest_via_http(cfg: &ProbeConfig) -> Result<String> {
             &format!("matrix-http-normalized:{selected_sync_source}"),
         )
         .await?;
+        persist_session_checkpoint(&cfg.session_path, next_batch)?;
     }
 
     let mut joined_room_ids: Vec<String> = Vec::new();
@@ -1153,7 +1246,11 @@ async fn http_resolve_room_name(
     base_url: &str,
     room_id: &str,
 ) -> String {
-    let url = format!("{}/_matrix/client/v3/rooms/{}/state", base_url, room_id);
+    let url = format!(
+        "{}/_matrix/client/v3/rooms/{}/state",
+        base_url,
+        urlencoding::encode(room_id)
+    );
     let resp = client
         .get(&url)
         .header("Authorization", format!("Bearer {}", access_token))
@@ -1184,6 +1281,170 @@ async fn http_resolve_room_name(
         }
     }
     room_id.to_string()
+}
+
+async fn http_fetch_room_state(
+    client: &HttpClient,
+    access_token: &str,
+    base_url: &str,
+    room_id: &str,
+    timeout_secs: u64,
+) -> Result<Vec<Value>> {
+    let base_url = base_url.trim_end_matches('/');
+    let url = format!(
+        "{}/_matrix/client/v3/rooms/{}/state",
+        base_url,
+        urlencoding::encode(room_id)
+    );
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", access_token))
+        .timeout(Duration::from_secs(timeout_secs))
+        .send()
+        .await
+        .context("http room state request failed")?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("HTTP room state returned {}: {}", status, body);
+    }
+
+    resp.json()
+        .await
+        .context("failed to parse room state response as JSON")
+}
+
+async fn http_fetch_room_state_event(
+    client: &HttpClient,
+    access_token: &str,
+    base_url: &str,
+    room_id: &str,
+    event_type: &str,
+    state_key: &str,
+    timeout_secs: u64,
+) -> Result<Option<Value>> {
+    let base_url = base_url.trim_end_matches('/');
+    let url = format!(
+        "{}/_matrix/client/v3/rooms/{}/state/{}/{}",
+        base_url,
+        urlencoding::encode(room_id),
+        urlencoding::encode(event_type),
+        urlencoding::encode(state_key)
+    );
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", access_token))
+        .timeout(Duration::from_secs(timeout_secs))
+        .send()
+        .await
+        .context("http room state event request failed")?;
+
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("HTTP room state event returned {}: {}", status, body);
+    }
+
+    let content: Value = resp
+        .json()
+        .await
+        .context("failed to parse room state event response as JSON")?;
+
+    Ok(Some(serde_json::json!({
+        "type": event_type,
+        "state_key": state_key,
+        "content": content
+    })))
+}
+
+async fn http_fetch_joined_rooms(
+    client: &HttpClient,
+    access_token: &str,
+    base_url: &str,
+    timeout_secs: u64,
+) -> Result<Vec<String>> {
+    let base_url = base_url.trim_end_matches('/');
+    let url = format!("{}/_matrix/client/v3/joined_rooms", base_url);
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", access_token))
+        .timeout(Duration::from_secs(timeout_secs))
+        .send()
+        .await
+        .context("http joined_rooms request failed")?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("HTTP joined_rooms returned {}: {}", status, body);
+    }
+
+    let payload: Value = resp
+        .json()
+        .await
+        .context("failed to parse joined_rooms response as JSON")?;
+
+    Ok(payload
+        .get("joined_rooms")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(ToOwned::to_owned)
+        .collect())
+}
+
+fn extract_bridge_targets(states: &[Value]) -> Vec<BridgeTarget> {
+    let mut targets = Vec::new();
+    for state_event in states {
+        let Some(event_type) = state_event.get("type").and_then(Value::as_str) else {
+            continue;
+        };
+        if event_type != "m.bridge" && event_type != "uk.half-shot.bridge" {
+            continue;
+        }
+
+        let Some(state_key) = state_event.get("state_key").and_then(Value::as_str) else {
+            continue;
+        };
+        let content = state_event.get("content").unwrap_or(&Value::Null);
+        let protocol_id = content
+            .get("protocol")
+            .and_then(|value| value.get("id"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        let channel_id = content
+            .get("channel")
+            .and_then(|value| value.get("id"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        let display_name = content
+            .get("channel")
+            .and_then(|value| value.get("displayname"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+
+        targets.push(BridgeTarget {
+            state_key: state_key.to_string(),
+            protocol_id,
+            channel_id,
+            display_name,
+        });
+    }
+    targets
+}
+
+fn bridge_targets_match(left: &BridgeTarget, right: &BridgeTarget) -> bool {
+    (!left.state_key.is_empty() && !right.state_key.is_empty() && left.state_key == right.state_key)
+        || (left.protocol_id.is_some()
+            && left.protocol_id == right.protocol_id
+            && left.channel_id.is_some()
+            && left.channel_id == right.channel_id)
 }
 
 async fn http_fetch_room_history(
@@ -1256,16 +1517,7 @@ async fn http_fetch_room_history(
 
 async fn try_sdk_ingest(cfg: &ProbeConfig) -> Result<String> {
     let (client, session_file) = build_client(cfg).await?;
-
-    // Phase B: Attempt to restore keys from homeserver E2E Backup first
-    // This may eliminate the need for Beeper key export entirely
-    let backup_restore_outcome = maybe_restore_e2e_backup(&client).await;
-    eprintln!(
-        "E2E Backup restore: status={}, detail={}",
-        backup_restore_outcome.status, backup_restore_outcome.detail
-    );
-
-    // Fallback: Import from Beeper/Element key export if E2E Backup didn't have keys
+    let _ = maybe_restore_secret_storage(cfg, &client).await?;
     let import_outcome = maybe_import_room_keys(cfg, &client).await?;
 
     let db = connect_postgres(
@@ -1350,14 +1602,7 @@ async fn try_sdk_ingest(cfg: &ProbeConfig) -> Result<String> {
         &format!("matrix-sdk-native:{selected_sync_source}"),
     )
     .await?;
-
-    // Phase B: Upload our keys to homeserver E2E Backup after sync
-    // This ensures we have a backup of our session keys
-    let backup_upload_outcome = ensure_e2e_backup(&client).await;
-    eprintln!(
-        "E2E Backup upload: status={}, detail={}",
-        backup_upload_outcome.status, backup_upload_outcome.detail
-    );
+    persist_client_session(&cfg.session_path, &client, Some(next_batch_to_save.clone()))?;
 
     let upsert_conversation = prepare_upsert_conversation(&db).await?;
     let upsert_event = prepare_upsert_event(&db).await?;
@@ -1587,6 +1832,73 @@ fn build_sync_attempts(
     sync_attempts
 }
 
+fn persist_client_session(
+    session_path: &PathBuf,
+    client: &Client,
+    next_batch: Option<String>,
+) -> Result<()> {
+    let matrix_session = client
+        .matrix_auth()
+        .session()
+        .context("matrix session is unavailable for persistence")?;
+    let existing = read_optional_session_file(session_path);
+    let session = SessionFile {
+        access_token: matrix_session.tokens.access_token,
+        refresh_token: matrix_session.tokens.refresh_token,
+        user_id: matrix_session.meta.user_id.to_string(),
+        device_id: matrix_session.meta.device_id.to_string(),
+        homeserver: client.homeserver().to_string(),
+        next_batch: next_batch.or_else(|| {
+            existing
+                .as_ref()
+                .and_then(|session| session.next_batch.clone())
+        }),
+        expires_at: existing
+            .as_ref()
+            .and_then(|session| session.expires_at.clone()),
+        expires_in: existing.as_ref().and_then(|session| session.expires_in),
+        saved_at: Some(iso_now()),
+    };
+    write_session_file_atomic(session_path, &session)
+}
+
+fn persist_session_checkpoint(session_path: &PathBuf, next_batch: &str) -> Result<()> {
+    let Some(existing) = read_optional_session_file(session_path) else {
+        return Ok(());
+    };
+
+    let session = SessionFile {
+        next_batch: Some(next_batch.to_string()),
+        saved_at: Some(iso_now()),
+        ..existing
+    };
+    write_session_file_atomic(session_path, &session)
+}
+
+fn read_optional_session_file(session_path: &PathBuf) -> Option<SessionFile> {
+    let content = fs::read_to_string(session_path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+fn write_session_file_atomic(session_path: &PathBuf, session: &SessionFile) -> Result<()> {
+    let Some(parent) = session_path.parent() else {
+        return Err(anyhow::anyhow!(
+            "matrix session path {} has no parent directory",
+            session_path.display()
+        ));
+    };
+
+    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+    let tmp_path = session_path.with_extension("json.tmp");
+    let payload =
+        serde_json::to_string_pretty(session).context("failed to serialize matrix session")?;
+    fs::write(&tmp_path, payload)
+        .with_context(|| format!("failed to write {}", tmp_path.display()))?;
+    fs::rename(&tmp_path, session_path)
+        .with_context(|| format!("failed to replace {}", session_path.display()))?;
+    Ok(())
+}
+
 async fn fetch_room_history(
     room: &matrix_sdk::Room,
     self_user_id: Option<&str>,
@@ -1739,9 +2051,17 @@ async fn build_client(cfg: &ProbeConfig) -> Result<(Client, SessionFile)> {
 
     fs::create_dir_all(&cfg.store_path)
         .with_context(|| format!("failed to create {}", cfg.store_path.display()))?;
+    let _ = maybe_import_local_secrets_bundle(cfg, &session_file).await?;
+
+    let encryption_settings = EncryptionSettings {
+        backup_download_strategy: BackupDownloadStrategy::OneShot,
+        ..Default::default()
+    };
 
     let client = Client::builder()
         .homeserver_url(session_file.homeserver.clone())
+        .handle_refresh_tokens()
+        .with_encryption_settings(encryption_settings)
         .sqlite_store(cfg.store_path.clone(), None)
         .build()
         .await
@@ -1772,6 +2092,25 @@ async fn build_client(cfg: &ProbeConfig) -> Result<(Client, SessionFile)> {
         .restore_session(session, RoomLoadSettings::default())
         .await
         .context("failed to restore matrix session")?;
+    let session_path = cfg.session_path.clone();
+    client
+        .set_session_callbacks(
+            Box::new(|client| {
+                client.session_tokens().ok_or_else(|| {
+                    Box::new(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "missing session tokens",
+                    )) as Box<dyn std::error::Error + Send + Sync>
+                })
+            }),
+            Box::new(move |client| {
+                persist_client_session(&session_path, &client, None).map_err(|err| {
+                    Box::new(io::Error::other(err.to_string()))
+                        as Box<dyn std::error::Error + Send + Sync>
+                })
+            }),
+        )
+        .context("failed to configure matrix session persistence callbacks")?;
 
     Ok((client, session_file))
 }
@@ -1784,25 +2123,739 @@ async fn send_message_via_sdk(cfg: &ProbeConfig) -> Result<SendMessageResult> {
         .parse()
         .context("invalid LIFERADAR_SEND_ROOM_ID")?;
 
-    let (client, _) = build_client(cfg).await?;
+    send_debug(format!("start send_message room_id={room_id_value}"));
+    let (client, session_file) = build_client(cfg).await?;
+    send_debug("build_client complete");
+    let recovery_outcome = maybe_restore_secret_storage(cfg, &client).await?;
+    send_debug(format!(
+        "secret recovery status={} detail={}",
+        recovery_outcome.status, recovery_outcome.detail
+    ));
     maybe_import_room_keys(cfg, &client).await?;
-    client
+    send_debug("room-key import phase complete");
+    let sync_response = client
         .sync_once(SyncSettings::default().timeout(Duration::from_secs(cfg.timeout_seconds)))
         .await
         .context("matrix rust sync_once failed before send")?;
+    send_debug(format!(
+        "initial sync complete next_batch={}",
+        sync_response.next_batch
+    ));
+    persist_client_session(
+        &cfg.session_path,
+        &client,
+        Some(sync_response.next_batch.clone()),
+    )?;
+    send_debug("persisted session after initial sync");
+    let verification_outcome = maybe_verify_own_device(&client).await?;
+    send_debug(format!(
+        "own device verification status={} detail={}",
+        verification_outcome.status, verification_outcome.detail
+    ));
 
-    let room = client
-        .get_room(&room_id)
-        .context("matrix room not found in restored session")?;
-    let response = room
-        .send(RoomMessageEventContent::text_plain(content_text))
+    if let Some(room) = client.get_room(&room_id) {
+        send_debug("room found in SDK after initial sync; sending via SDK");
+        let response = send_via_sdk_room(&room, &content_text).await.context("matrix SDK send failed")?;
+
+        return Ok(SendMessageResult {
+            status: "sent",
+            event_id: response.event_id.to_string(),
+        });
+    }
+
+    send_debug("room missing in SDK after initial sync; trying SDK room hydration via join");
+    if let Some(room) = hydrate_joined_room_via_sdk(&client, &room_id).await? {
+        send_debug("SDK room hydration succeeded for requested room; sending via SDK");
+        let response = send_via_sdk_room(&room, &content_text)
+            .await
+            .context("matrix SDK send failed after SDK room hydration")?;
+
+        return Ok(SendMessageResult {
+            status: "sent",
+            event_id: response.event_id.to_string(),
+        });
+    }
+    send_debug("SDK room hydration did not materialize requested room");
+
+    let http_client = HttpClient::builder()
+        .user_agent("liferadar-matrix-probe/0.1.0")
+        .timeout(Duration::from_secs(cfg.timeout_seconds))
+        .build()
+        .context("failed to build HTTP client for Matrix send fallback")?;
+    send_debug("SDK room missing; trying direct HTTP send to requested room");
+
+    if let Ok(result) = send_message_via_http(
+        &http_client,
+        &session_file.access_token,
+        &session_file.homeserver,
+        &room_id_value,
+        &content_text,
+        cfg.timeout_seconds,
+    )
+    .await
+    {
+        send_debug("direct HTTP send to requested room succeeded");
+        return Ok(result);
+    }
+    send_debug("direct HTTP send to requested room failed; resolving replacement room");
+
+    let Some((replacement_room_id, replacement_title)) = resolve_replacement_room_id(
+        &http_client,
+        &session_file.access_token,
+        &session_file.homeserver,
+        &room_id_value,
+        cfg.timeout_seconds,
+    )
+    .await?
+    else {
+        send_debug("replacement room lookup returned none");
+        anyhow::bail!("matrix room not found in restored session");
+    };
+    send_debug(format!(
+        "replacement room resolved replacement_room_id={replacement_room_id} title={}",
+        replacement_title.as_deref().unwrap_or("")
+    ));
+
+    let replacement_owned_room_id: OwnedRoomId = replacement_room_id
+        .parse()
+        .with_context(|| format!("invalid replacement room id {}", replacement_room_id))?;
+
+    send_debug("running full sync before remapped send");
+    let full_sync_response = client
+        .sync_once(SyncSettings::default().timeout(Duration::from_secs(cfg.timeout_seconds)))
         .await
-        .context("matrix SDK send failed")?;
+        .context("matrix full sync failed before remapped send")?;
+    send_debug(format!(
+        "full sync before remapped send complete next_batch={}",
+        full_sync_response.next_batch
+    ));
+    persist_client_session(
+        &cfg.session_path,
+        &client,
+        Some(full_sync_response.next_batch.clone()),
+    )?;
+    send_debug("persisted session after full sync");
 
-    Ok(SendMessageResult {
-        status: "sent",
-        event_id: response.event_id.to_string(),
-    })
+    let result = if let Some(room) = client.get_room(&replacement_owned_room_id) {
+        send_debug("replacement room found in SDK; sending via SDK");
+        let response = send_via_sdk_room(&room, &content_text)
+            .await
+            .with_context(|| format!("matrix SDK send failed after remap to {}", replacement_room_id))?;
+        SendMessageResult {
+            status: "sent",
+            event_id: response.event_id.to_string(),
+        }
+    } else if let Some(room) = hydrate_joined_room_via_sdk(&client, &replacement_owned_room_id).await? {
+        send_debug("replacement room hydrated via SDK join; sending via SDK");
+        let response = send_via_sdk_room(&room, &content_text)
+            .await
+            .with_context(|| format!("matrix SDK send failed after hydrating remap to {}", replacement_room_id))?;
+        SendMessageResult {
+            status: "sent",
+            event_id: response.event_id.to_string(),
+        }
+    } else {
+        send_debug("replacement room still missing in SDK; trying HTTP send to replacement room");
+        send_message_via_http(
+            &http_client,
+            &session_file.access_token,
+            &session_file.homeserver,
+            &replacement_room_id,
+            &content_text,
+            cfg.timeout_seconds,
+        )
+        .await
+        .with_context(|| format!("matrix HTTP send failed after remap to {}", replacement_room_id))?
+    };
+    send_debug("remapped send completed; reconciling conversation room id");
+
+    let db = connect_postgres(cfg, "failed to connect to liferadar postgres for room remap").await?;
+    reconcile_conversation_room_id(
+        &db,
+        &room_id_value,
+        &replacement_room_id,
+        replacement_title.as_deref(),
+    )
+    .await?;
+    send_debug("conversation room id reconciliation complete");
+
+    Ok(result)
+}
+
+async fn run_interactive_device_verification(cfg: &ProbeConfig) -> Result<()> {
+    let target_device_value = env::var("LIFERADAR_VERIFY_TARGET_DEVICE_ID")
+        .context("missing LIFERADAR_VERIFY_TARGET_DEVICE_ID")?;
+    let target_device_id: OwnedDeviceId = target_device_value
+        .as_str()
+        .into();
+
+    let (client, session_file) = build_client(cfg).await?;
+    let recovery_outcome = maybe_restore_secret_storage(cfg, &client).await?;
+    emit_verification_event(json!({
+        "event": "secret_recovery",
+        "status": recovery_outcome.status,
+        "detail": recovery_outcome.detail,
+    }))?;
+    let import_outcome = maybe_import_room_keys(cfg, &client).await?;
+    emit_verification_event(json!({
+        "event": "room_key_import",
+        "status": import_outcome.status,
+        "detail": import_outcome.detail,
+        "imported_count": import_outcome.imported_count,
+        "total_count": import_outcome.total_count,
+    }))?;
+
+    let sync_response = client
+        .sync_once(SyncSettings::default().timeout(Duration::from_secs(cfg.timeout_seconds)))
+        .await
+        .context("matrix rust sync_once failed before verification")?;
+    persist_client_session(
+        &cfg.session_path,
+        &client,
+        Some(sync_response.next_batch.clone()),
+    )?;
+
+    let own_user_id = session_file.user_id.parse::<OwnedUserId>()
+        .context("invalid user id in matrix session file")?;
+    let Some(device) = client
+        .encryption()
+        .get_device(&own_user_id, &target_device_id)
+        .await
+        .context("failed to look up target matrix device")?
+    else {
+        anyhow::bail!("target Matrix device was not found in the current device list");
+    };
+    let Some(own_identity) = client
+        .encryption()
+        .get_user_identity(&own_user_id)
+        .await
+        .context("failed to load own Matrix user identity")?
+    else {
+        anyhow::bail!("own Matrix user identity is not available yet");
+    };
+
+    emit_verification_event(json!({
+        "event": "device_found",
+        "user_id": own_user_id,
+        "device_id": target_device_value,
+        "verified": device.is_verified(),
+        "locally_trusted": device.is_locally_trusted(),
+        "display_name": device.display_name(),
+    }))?;
+
+    if device.is_verified() {
+        emit_verification_event(json!({
+            "event": "verification_complete",
+            "status": "already_verified",
+            "device_id": target_device_value,
+        }))?;
+        return Ok(());
+    }
+
+    let verification = own_identity
+        .request_verification_with_methods(vec![VerificationMethod::SasV1])
+        .await
+        .context("failed to request self-verification with existing devices")?;
+    let flow_id = verification.flow_id().to_string();
+    emit_verification_event(json!({
+        "event": "request_created",
+        "status": "waiting_for_accept",
+        "flow_id": flow_id,
+        "device_id": target_device_value,
+        "detail": format!(
+            "Verification request sent to your other Matrix devices. Accept it on {}.",
+            target_device_value
+        ),
+    }))?;
+
+    let sync_client = client.clone();
+    let sync_session_path = cfg.session_path.clone();
+    let sync_timeout = cfg.timeout_seconds;
+    let sync_task = tokio::spawn(async move {
+        let mut since = None::<String>;
+        loop {
+            let settings = match &since {
+                Some(token) => SyncSettings::new().token(token.clone()),
+                None => SyncSettings::new(),
+            }
+            .timeout(Duration::from_secs(sync_timeout));
+
+            match sync_client.sync_once(settings).await {
+                Ok(response) => {
+                    since = Some(response.next_batch.clone());
+                    let _ = persist_client_session(
+                        &sync_session_path,
+                        &sync_client,
+                        Some(response.next_batch),
+                    );
+                }
+                Err(err) => {
+                    eprintln!("[matrix-verify-sync] {err:#}");
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+            }
+        }
+    });
+
+    let (command_tx, mut command_rx) = mpsc::unbounded_channel::<VerificationCommand>();
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(tokio::io::stdin()).lines();
+        loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => {
+                    let command = match line.trim().to_ascii_lowercase().as_str() {
+                        "yes" | "confirm" => Some(VerificationCommand::Confirm),
+                        "no" | "reject" | "mismatch" => Some(VerificationCommand::Reject),
+                        "cancel" => Some(VerificationCommand::Cancel),
+                        _ => None,
+                    };
+                    if let Some(command) = command {
+                        let _ = command_tx.send(command);
+                    }
+                }
+                Ok(None) | Err(_) => break,
+            }
+        }
+    });
+
+    let verification_result =
+        wait_for_verification_request(&verification, &mut command_rx, &target_device_value).await;
+    sync_task.abort();
+    let _ = sync_task.await;
+    verification_result
+}
+
+async fn wait_for_verification_request(
+    verification: &matrix_sdk::encryption::verification::VerificationRequest,
+    command_rx: &mut mpsc::UnboundedReceiver<VerificationCommand>,
+    target_device_id: &str,
+) -> Result<()> {
+    let mut changes = verification.changes();
+    let mut handled_initial_state = false;
+
+    loop {
+        if !handled_initial_state {
+            handled_initial_state = true;
+            match verification.state() {
+                VerificationRequestState::Created { .. } => {
+                    emit_verification_event(json!({
+                        "event": "request_pending",
+                        "status": "waiting_for_accept",
+                        "device_id": target_device_id,
+                    }))?;
+                }
+                VerificationRequestState::Requested { their_methods: _, other_device_data } => {
+                    emit_verification_event(json!({
+                        "event": "request_received",
+                        "status": "requested",
+                        "device_id": target_device_id,
+                        "other_device_id": other_device_data.device_id().to_string(),
+                        "detail": format!(
+                            "Verification request acknowledged by {}.",
+                            other_device_data.device_id()
+                        ),
+                    }))?;
+                }
+                VerificationRequestState::Ready { their_methods: _, our_methods: _, other_device_data } => {
+                    let accepted_device_id = other_device_data.device_id().to_string();
+                    emit_verification_event(json!({
+                        "event": "request_ready",
+                        "status": "ready_for_sas",
+                        "device_id": target_device_id,
+                        "other_device_id": accepted_device_id,
+                        "detail": if accepted_device_id == target_device_id {
+                            format!("{} accepted the request. Starting emoji verification…", target_device_id)
+                        } else {
+                            format!(
+                                "{} accepted the request instead of {}. Continuing with the accepting device.",
+                                accepted_device_id,
+                                target_device_id
+                            )
+                        },
+                    }))?;
+                    if let Some(sas) = verification
+                        .start_sas()
+                        .await
+                        .context("failed to start SAS verification")?
+                    {
+                        return wait_for_sas_verification(&sas, command_rx, target_device_id).await;
+                    }
+                }
+                VerificationRequestState::Transitioned { verification } => {
+                    if let Verification::SasV1(sas) = verification {
+                        emit_verification_event(json!({
+                            "event": "sas_started",
+                            "status": "waiting_for_emoji",
+                            "device_id": target_device_id,
+                        }))?;
+                        return wait_for_sas_verification(&sas, command_rx, target_device_id).await;
+                    }
+                }
+                VerificationRequestState::Done => {
+                    emit_verification_event(json!({
+                        "event": "verification_complete",
+                        "status": "done",
+                        "device_id": target_device_id,
+                    }))?;
+                    return Ok(());
+                }
+                VerificationRequestState::Cancelled(cancel_info) => {
+                    emit_verification_event(json!({
+                        "event": "verification_cancelled",
+                        "status": "cancelled",
+                        "reason": cancel_info.reason(),
+                        "device_id": target_device_id,
+                    }))?;
+                    anyhow::bail!("verification cancelled: {}", cancel_info.reason());
+                }
+            }
+        }
+
+        tokio::select! {
+            maybe_command = command_rx.recv() => {
+                match maybe_command {
+                    Some(VerificationCommand::Cancel) | Some(VerificationCommand::Reject) => {
+                        verification.cancel().await.context("failed to cancel pending verification request")?;
+                        emit_verification_event(json!({
+                            "event": "request_cancelled_locally",
+                            "status": "cancelled",
+                            "device_id": target_device_id,
+                        }))?;
+                    }
+                    Some(VerificationCommand::Confirm) | None => {}
+                }
+            }
+            maybe_state = changes.next() => {
+                let Some(state) = maybe_state else {
+                    anyhow::bail!("verification request stream ended unexpectedly");
+                };
+
+                match state {
+                    VerificationRequestState::Created { .. } => {
+                        emit_verification_event(json!({
+                            "event": "request_pending",
+                            "status": "waiting_for_accept",
+                            "device_id": target_device_id,
+                        }))?;
+                    }
+                    VerificationRequestState::Requested { their_methods: _, other_device_data } => {
+                        emit_verification_event(json!({
+                            "event": "request_received",
+                            "status": "requested",
+                            "device_id": target_device_id,
+                            "other_device_id": other_device_data.device_id().to_string(),
+                            "detail": format!(
+                                "Verification request acknowledged by {}.",
+                                other_device_data.device_id()
+                            ),
+                        }))?;
+                    }
+                    VerificationRequestState::Ready { their_methods: _, our_methods: _, other_device_data } => {
+                        let accepted_device_id = other_device_data.device_id().to_string();
+                        emit_verification_event(json!({
+                            "event": "request_ready",
+                            "status": "ready_for_sas",
+                            "device_id": target_device_id,
+                            "other_device_id": accepted_device_id,
+                            "detail": if accepted_device_id == target_device_id {
+                                format!("{} accepted the request. Starting emoji verification…", target_device_id)
+                            } else {
+                                format!(
+                                    "{} accepted the request instead of {}. Continuing with the accepting device.",
+                                    accepted_device_id,
+                                    target_device_id
+                                )
+                            },
+                        }))?;
+                        if let Some(sas) = verification
+                            .start_sas()
+                            .await
+                            .context("failed to start SAS verification")?
+                        {
+                            return wait_for_sas_verification(&sas, command_rx, target_device_id).await;
+                        }
+                    }
+                    VerificationRequestState::Transitioned { verification } => {
+                        if let Verification::SasV1(sas) = verification {
+                            emit_verification_event(json!({
+                                "event": "sas_started",
+                                "status": "waiting_for_emoji",
+                                "device_id": target_device_id,
+                            }))?;
+                            return wait_for_sas_verification(&sas, command_rx, target_device_id).await;
+                        }
+                    }
+                    VerificationRequestState::Done => {
+                        emit_verification_event(json!({
+                            "event": "verification_complete",
+                            "status": "done",
+                            "device_id": target_device_id,
+                        }))?;
+                        return Ok(());
+                    }
+                    VerificationRequestState::Cancelled(cancel_info) => {
+                        emit_verification_event(json!({
+                            "event": "verification_cancelled",
+                            "status": "cancelled",
+                            "reason": cancel_info.reason(),
+                            "device_id": target_device_id,
+                        }))?;
+                        anyhow::bail!("verification cancelled: {}", cancel_info.reason());
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn wait_for_sas_verification(
+    sas: &matrix_sdk::encryption::verification::SasVerification,
+    command_rx: &mut mpsc::UnboundedReceiver<VerificationCommand>,
+    target_device_id: &str,
+) -> Result<()> {
+    let mut changes = sas.changes();
+    let mut awaiting_confirmation = false;
+    let mut handled_initial_state = false;
+
+    loop {
+        if !handled_initial_state {
+            handled_initial_state = true;
+            match sas.state() {
+                SasState::Created { .. } => {
+                    emit_verification_event(json!({
+                        "event": "sas_created",
+                        "status": "waiting_for_emoji",
+                        "device_id": target_device_id,
+                    }))?;
+                }
+                SasState::Started { .. } => {
+                    emit_verification_event(json!({
+                        "event": "sas_started",
+                        "status": "waiting_for_emoji",
+                        "device_id": target_device_id,
+                    }))?;
+                }
+                SasState::Accepted { .. } => {
+                    emit_verification_event(json!({
+                        "event": "sas_accepted",
+                        "status": "waiting_for_emoji",
+                        "device_id": target_device_id,
+                    }))?;
+                }
+                SasState::KeysExchanged { emojis, decimals } => {
+                    awaiting_confirmation = true;
+                    let emoji_payload = emojis
+                        .map(|items| {
+                            items
+                                .emojis
+                                .into_iter()
+                                .map(|emoji| json!({
+                                    "symbol": emoji.symbol,
+                                    "description": emoji.description,
+                                }))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    emit_verification_event(json!({
+                        "event": "emoji_ready",
+                        "status": "waiting_for_confirm",
+                        "device_id": target_device_id,
+                        "emojis": emoji_payload,
+                        "decimals": [decimals.0, decimals.1, decimals.2],
+                    }))?;
+                }
+                SasState::Confirmed => {
+                    emit_verification_event(json!({
+                        "event": "sas_confirmed",
+                        "status": "confirming",
+                        "device_id": target_device_id,
+                    }))?;
+                }
+                SasState::Done { .. } => {
+                    let verified_device = sas.other_device();
+                    emit_verification_event(json!({
+                        "event": "verification_complete",
+                        "status": "done",
+                        "device_id": target_device_id,
+                        "verified_device_id": verified_device.device_id().to_string(),
+                        "verified_user_id": verified_device.user_id().to_string(),
+                        "locally_trusted": verified_device.is_locally_trusted(),
+                    }))?;
+                    return Ok(());
+                }
+                SasState::Cancelled(cancel_info) => {
+                    emit_verification_event(json!({
+                        "event": "verification_cancelled",
+                        "status": "cancelled",
+                        "reason": cancel_info.reason(),
+                        "device_id": target_device_id,
+                    }))?;
+                    anyhow::bail!("SAS verification cancelled: {}", cancel_info.reason());
+                }
+            }
+        }
+
+        tokio::select! {
+            maybe_command = command_rx.recv() => {
+                let Some(command) = maybe_command else {
+                    continue;
+                };
+
+                if !awaiting_confirmation {
+                    if matches!(command, VerificationCommand::Cancel | VerificationCommand::Reject) {
+                        sas.cancel().await.context("failed to cancel SAS verification")?;
+                        emit_verification_event(json!({
+                            "event": "verification_cancelled_locally",
+                            "status": "cancelled",
+                            "device_id": target_device_id,
+                        }))?;
+                    }
+                    continue;
+                }
+
+                match command {
+                    VerificationCommand::Confirm => {
+                        sas.confirm().await.context("failed to confirm SAS verification")?;
+                        awaiting_confirmation = false;
+                        emit_verification_event(json!({
+                            "event": "verification_confirmed",
+                            "status": "confirming",
+                            "device_id": target_device_id,
+                        }))?;
+                    }
+                    VerificationCommand::Reject => {
+                        sas.mismatch().await.context("failed to reject SAS verification")?;
+                        awaiting_confirmation = false;
+                        emit_verification_event(json!({
+                            "event": "verification_rejected",
+                            "status": "rejected",
+                            "device_id": target_device_id,
+                        }))?;
+                    }
+                    VerificationCommand::Cancel => {
+                        sas.cancel().await.context("failed to cancel SAS verification")?;
+                        awaiting_confirmation = false;
+                        emit_verification_event(json!({
+                            "event": "verification_cancelled_locally",
+                            "status": "cancelled",
+                            "device_id": target_device_id,
+                        }))?;
+                    }
+                }
+            }
+            maybe_state = changes.next() => {
+                let Some(state) = maybe_state else {
+                    anyhow::bail!("SAS verification stream ended unexpectedly");
+                };
+
+                match state {
+                    SasState::Created { .. } => {
+                        emit_verification_event(json!({
+                            "event": "sas_created",
+                            "status": "waiting_for_emoji",
+                            "device_id": target_device_id,
+                        }))?;
+                    }
+                    SasState::Started { .. } => {
+                        emit_verification_event(json!({
+                            "event": "sas_started",
+                            "status": "waiting_for_emoji",
+                            "device_id": target_device_id,
+                        }))?;
+                    }
+                    SasState::Accepted { .. } => {
+                        emit_verification_event(json!({
+                            "event": "sas_accepted",
+                            "status": "waiting_for_emoji",
+                            "device_id": target_device_id,
+                        }))?;
+                    }
+                    SasState::KeysExchanged { emojis, decimals } => {
+                        awaiting_confirmation = true;
+                        let emoji_payload = emojis
+                            .map(|items| {
+                                items
+                                    .emojis
+                                    .into_iter()
+                                    .map(|emoji| json!({
+                                        "symbol": emoji.symbol,
+                                        "description": emoji.description,
+                                    }))
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        emit_verification_event(json!({
+                            "event": "emoji_ready",
+                            "status": "waiting_for_confirm",
+                            "device_id": target_device_id,
+                            "emojis": emoji_payload,
+                            "decimals": [decimals.0, decimals.1, decimals.2],
+                        }))?;
+                    }
+                    SasState::Confirmed => {
+                        emit_verification_event(json!({
+                            "event": "sas_confirmed",
+                            "status": "confirming",
+                            "device_id": target_device_id,
+                        }))?;
+                    }
+                    SasState::Done { .. } => {
+                        let verified_device = sas.other_device();
+                        emit_verification_event(json!({
+                            "event": "verification_complete",
+                            "status": "done",
+                            "device_id": target_device_id,
+                            "verified_device_id": verified_device.device_id().to_string(),
+                            "verified_user_id": verified_device.user_id().to_string(),
+                            "locally_trusted": verified_device.is_locally_trusted(),
+                        }))?;
+                        return Ok(());
+                    }
+                    SasState::Cancelled(cancel_info) => {
+                        emit_verification_event(json!({
+                            "event": "verification_cancelled",
+                            "status": "cancelled",
+                            "reason": cancel_info.reason(),
+                            "device_id": target_device_id,
+                        }))?;
+                        anyhow::bail!("SAS verification cancelled: {}", cancel_info.reason());
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn emit_verification_event(payload: serde_json::Value) -> Result<()> {
+    use std::io::Write;
+
+    let mut stdout = io::stdout();
+    serde_json::to_writer(&mut stdout, &payload).context("failed to serialize verification event")?;
+    stdout.write_all(b"\n").context("failed to terminate verification event line")?;
+    stdout.flush().context("failed to flush verification event line")?;
+    Ok(())
+}
+
+async fn send_via_sdk_room(
+    room: &matrix_sdk::Room,
+    content_text: &str,
+) -> Result<matrix_sdk::ruma::api::client::message::send_message_event::v3::Response> {
+    room.send(RoomMessageEventContent::text_plain(content_text))
+        .await
+        .context("matrix SDK room send failed")
+}
+
+async fn hydrate_joined_room_via_sdk(
+    client: &Client,
+    room_id: &matrix_sdk::ruma::RoomId,
+) -> Result<Option<matrix_sdk::Room>> {
+    match client.join_room_by_id(room_id).await {
+        Ok(room) => Ok(Some(room)),
+        Err(err) => {
+            send_debug(format!("SDK join_room_by_id failed for {room_id}: {err:#}"));
+            Ok(client.get_room(room_id))
+        }
+    }
 }
 
 async fn connect_postgres(cfg: &ProbeConfig, context_msg: &'static str) -> Result<PgClient> {
@@ -1819,6 +2872,302 @@ async fn connect_postgres(cfg: &ProbeConfig, context_msg: &'static str) -> Resul
         }
     });
     Ok(db)
+}
+
+async fn send_message_via_http(
+    client: &HttpClient,
+    access_token: &str,
+    base_url: &str,
+    room_id: &str,
+    content_text: &str,
+    timeout_secs: u64,
+) -> Result<SendMessageResult> {
+    let base_url = base_url.trim_end_matches('/');
+    let txn_id = format!("liferadar-{}", now_unix_ms());
+    let url = format!(
+        "{}/_matrix/client/v3/rooms/{}/send/m.room.message/{}",
+        base_url,
+        urlencoding::encode(room_id),
+        txn_id
+    );
+    let resp = client
+        .put(&url)
+        .header("Authorization", format!("Bearer {}", access_token))
+        .timeout(Duration::from_secs(timeout_secs))
+        .json(&serde_json::json!({
+            "msgtype": "m.text",
+            "body": content_text
+        }))
+        .send()
+        .await
+        .context("matrix HTTP send request failed")?;
+
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        anyhow::bail!("Matrix HTTP send returned {}: {}", status, body);
+    }
+
+    let payload: Value =
+        serde_json::from_str(&body).context("failed to parse Matrix HTTP send response")?;
+    let event_id = payload
+        .get("event_id")
+        .and_then(Value::as_str)
+        .context("Matrix HTTP send response missing event_id")?;
+
+    Ok(SendMessageResult {
+        status: "sent",
+        event_id: event_id.to_string(),
+    })
+}
+
+async fn resolve_replacement_room_id(
+    client: &HttpClient,
+    access_token: &str,
+    base_url: &str,
+    stale_room_id: &str,
+    timeout_secs: u64,
+) -> Result<Option<(String, Option<String>)>> {
+    let old_state = http_fetch_room_state(client, access_token, base_url, stale_room_id, timeout_secs)
+        .await
+        .with_context(|| format!("failed to fetch state for stale room {}", stale_room_id))?;
+    let bridge_targets = extract_bridge_targets(&old_state);
+    if bridge_targets.is_empty() {
+        return Ok(None);
+    }
+
+    let joined_rooms = http_fetch_joined_rooms(client, access_token, base_url, timeout_secs).await?;
+    if let Some(found) = lookup_joined_room_by_bridge_state(
+        client,
+        access_token,
+        base_url,
+        &joined_rooms,
+        &bridge_targets,
+        stale_room_id,
+        timeout_secs,
+    )
+    .await?
+    {
+        return Ok(Some(found));
+    }
+
+    for room_id in joined_rooms {
+        if room_id == stale_room_id {
+            continue;
+        }
+        for target in &bridge_targets {
+            if let Some(state_event) = http_fetch_room_state_event(
+                client,
+                access_token,
+                base_url,
+                &room_id,
+                "m.bridge",
+                &target.state_key,
+                timeout_secs,
+            )
+            .await?
+            {
+                let matched = extract_bridge_targets(&[state_event]);
+                if matched.iter().any(|candidate| bridge_targets_match(candidate, target)) {
+                    return Ok(Some((room_id.clone(), target.display_name.clone())));
+                }
+            }
+            if let Some(state_event) = http_fetch_room_state_event(
+                client,
+                access_token,
+                base_url,
+                &room_id,
+                "uk.half-shot.bridge",
+                &target.state_key,
+                timeout_secs,
+            )
+            .await?
+            {
+                let matched = extract_bridge_targets(&[state_event]);
+                if matched.iter().any(|candidate| bridge_targets_match(candidate, target)) {
+                    return Ok(Some((room_id.clone(), target.display_name.clone())));
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+async fn lookup_joined_room_by_bridge_state(
+    client: &HttpClient,
+    access_token: &str,
+    base_url: &str,
+    joined_rooms: &[String],
+    bridge_targets: &[BridgeTarget],
+    stale_room_id: &str,
+    timeout_secs: u64,
+) -> Result<Option<(String, Option<String>)>> {
+    let exact_targets: Vec<BridgeTarget> = bridge_targets
+        .iter()
+        .filter(|target| !target.state_key.is_empty())
+        .cloned()
+        .collect();
+    if exact_targets.is_empty() {
+        return Ok(None);
+    }
+
+    let mut join_set = JoinSet::new();
+    let mut next_idx = 0usize;
+    let concurrency = 32usize;
+
+    while next_idx < joined_rooms.len() || !join_set.is_empty() {
+        while next_idx < joined_rooms.len() && join_set.len() < concurrency {
+            let room_id = joined_rooms[next_idx].clone();
+            next_idx += 1;
+            if room_id == stale_room_id {
+                continue;
+            }
+            let client = client.clone();
+            let access_token = access_token.to_string();
+            let base_url = base_url.to_string();
+            let targets = exact_targets.clone();
+            join_set.spawn(async move {
+                lookup_room_by_exact_bridge_state(
+                    client,
+                    access_token,
+                    base_url,
+                    room_id,
+                    targets,
+                    timeout_secs,
+                )
+                .await
+            });
+        }
+
+        let Some(joined) = join_set.join_next().await else {
+            break;
+        };
+
+        match joined {
+            Ok(Ok(Some(found))) => return Ok(Some(found)),
+            Ok(Ok(None)) => {}
+            Ok(Err(err)) => return Err(err),
+            Err(err) => return Err(anyhow::anyhow!("bridge-state lookup task failed: {err}")),
+        }
+    }
+
+    Ok(None)
+}
+
+async fn lookup_room_by_exact_bridge_state(
+    client: HttpClient,
+    access_token: String,
+    base_url: String,
+    room_id: String,
+    targets: Vec<BridgeTarget>,
+    timeout_secs: u64,
+) -> Result<Option<(String, Option<String>)>> {
+    for target in &targets {
+        for event_type in ["m.bridge", "uk.half-shot.bridge"] {
+            if let Some(state_event) = http_fetch_room_state_event(
+                &client,
+                &access_token,
+                &base_url,
+                &room_id,
+                event_type,
+                &target.state_key,
+                timeout_secs,
+            )
+            .await?
+            {
+                let matched = extract_bridge_targets(&[state_event]);
+                if matched.iter().any(|candidate| bridge_targets_match(candidate, target)) {
+                    return Ok(Some((room_id.clone(), target.display_name.clone())));
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+async fn reconcile_conversation_room_id(
+    db: &PgClient,
+    stale_room_id: &str,
+    replacement_room_id: &str,
+    replacement_title: Option<&str>,
+) -> Result<()> {
+    if stale_room_id == replacement_room_id {
+        return Ok(());
+    }
+
+    let stale_row = db
+        .query_opt(
+            "select id::text from life_radar.conversations where source = 'matrix' and external_id = $1",
+            &[&stale_room_id],
+        )
+        .await
+        .context("failed to load stale matrix conversation")?;
+    let Some(stale_row) = stale_row else {
+        return Ok(());
+    };
+    let stale_id: String = stale_row.get(0);
+
+    let replacement_row = db
+        .query_opt(
+            "select id::text from life_radar.conversations where source = 'matrix' and external_id = $1",
+            &[&replacement_room_id],
+        )
+        .await
+        .context("failed to load replacement matrix conversation")?;
+
+    let remap_meta = serde_json::json!({
+        "room_id_remapped_from": stale_room_id,
+        "room_id_remapped_to": replacement_room_id,
+        "room_id_remapped_at": iso_now(),
+        "room_id_remap_reason": "bridge-room-replacement-detected"
+    })
+    .to_string();
+
+    if let Some(replacement_row) = replacement_row {
+        let replacement_id: String = replacement_row.get(0);
+        db.execute(
+            "update life_radar.message_events set conversation_id = $1::uuid where conversation_id = $2::uuid",
+            &[&replacement_id, &stale_id],
+        )
+        .await
+        .context("failed to move message events to replacement conversation")?;
+        db.execute(
+            "update life_radar.conversations
+             set metadata = metadata || $2::text::jsonb,
+                 title = coalesce(title, $3),
+                 updated_at = now()
+             where id = $1::uuid",
+            &[&replacement_id, &remap_meta, &replacement_title],
+        )
+        .await
+        .context("failed to annotate replacement conversation")?;
+        db.execute(
+            "update life_radar.conversations
+             set state = 'archived',
+                 metadata = metadata || $2::text::jsonb,
+                 updated_at = now()
+             where id = $1::uuid",
+            &[&stale_id, &remap_meta],
+        )
+        .await
+        .context("failed to archive stale matrix conversation")?;
+    } else {
+        db.execute(
+            "update life_radar.conversations
+             set external_id = $2,
+                 title = coalesce($3, title),
+                 metadata = metadata || $4::text::jsonb,
+                 updated_at = now()
+             where source = 'matrix' and external_id = $1",
+            &[&stale_room_id, &replacement_room_id, &replacement_title, &remap_meta],
+        )
+        .await
+        .context("failed to remap stale matrix conversation room id")?;
+    }
+
+    Ok(())
 }
 
 async fn prepare_upsert_conversation(db: &PgClient) -> Result<tokio_postgres::Statement> {
@@ -2091,6 +3440,15 @@ fn matrix_room_metadata(
 }
 
 async fn maybe_import_room_keys(cfg: &ProbeConfig, client: &Client) -> Result<ImportOutcome> {
+    if !cfg.key_import_enabled {
+        return Ok(ImportOutcome {
+            status: "disabled",
+            detail: "room-key import disabled by LIFERADAR_MATRIX_KEY_IMPORT_ENABLED".to_string(),
+            imported_count: 0,
+            total_count: 0,
+        });
+    }
+
     if !cfg.key_export_path.is_file() {
         return Ok(ImportOutcome {
             status: "missing",
@@ -2178,9 +3536,154 @@ async fn maybe_import_room_keys(cfg: &ProbeConfig, client: &Client) -> Result<Im
     })
 }
 
+async fn maybe_restore_secret_storage(cfg: &ProbeConfig, client: &Client) -> Result<SecretRecoveryOutcome> {
+    let secret_storage = client.encryption().secret_storage();
+    let Some(default_key_id) = secret_storage.fetch_default_key_id().await? else {
+        return Ok(SecretRecoveryOutcome {
+            status: "not_configured",
+            detail: "secret storage is not configured on this account".to_string(),
+        });
+    };
+
+    let Some(cross_signing_status) = client.encryption().cross_signing_status().await else {
+        return Ok(SecretRecoveryOutcome {
+            status: "unavailable",
+            detail: "cross-signing status is not available yet".to_string(),
+        });
+    };
+    if cross_signing_status.has_master && cross_signing_status.has_self_signing {
+        return Ok(SecretRecoveryOutcome {
+            status: "already_present",
+            detail: "cross-signing secrets already available locally".to_string(),
+        });
+    }
+
+    let candidate_paths = recovery_candidate_paths(cfg);
+    if candidate_paths.is_empty() {
+        return Ok(SecretRecoveryOutcome {
+            status: "missing",
+            detail: format!(
+                "secret storage default key exists ({:?}) but no recovery material path was configured",
+                default_key_id
+            ),
+        });
+    }
+
+    let mut attempted_paths = Vec::new();
+    let mut errors = Vec::new();
+
+    for path in candidate_paths {
+        let Some(candidate) = read_optional_trimmed_secret(&path)? else {
+            continue;
+        };
+
+        attempted_paths.push(path.display().to_string());
+        match client.encryption().recovery().recover(&candidate).await {
+            Ok(()) => {
+                return Ok(SecretRecoveryOutcome {
+                    status: "recovered",
+                    detail: format!("recovered E2EE secrets from {}", path.display()),
+                });
+            }
+            Err(err) => {
+                errors.push(format!("{}: {err}", path.display()));
+            }
+        }
+    }
+
+    Ok(SecretRecoveryOutcome {
+        status: "failed",
+        detail: format!(
+            "failed to recover E2EE secrets using {} candidate(s): {}",
+            attempted_paths.len(),
+            if errors.is_empty() {
+                "no readable recovery material found".to_string()
+            } else {
+                errors.join(" | ")
+            }
+        ),
+    })
+}
+
+async fn maybe_import_local_secrets_bundle(
+    cfg: &ProbeConfig,
+    session_file: &SessionFile,
+) -> Result<()> {
+    let Some(path) = cfg.secrets_bundle_path.as_ref() else {
+        return Ok(());
+    };
+
+    if !path.is_file() {
+        return Ok(());
+    }
+
+    let bundle: SecretsBundle = serde_json::from_str(
+        &fs::read_to_string(path)
+            .with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("invalid secrets bundle {}", path.display()))?;
+
+    let store = matrix_sdk::SqliteCryptoStore::open(&cfg.store_path, None)
+        .await
+        .context("failed to open Matrix crypto store for secrets bundle import")?;
+    let user_id: OwnedUserId = session_file
+        .user_id
+        .parse()
+        .context("invalid matrix user_id while importing local secrets bundle")?;
+    let device_id: OwnedDeviceId = session_file.device_id.as_str().into();
+    let machine = OlmMachine::with_store(&user_id, &device_id, store, None)
+        .await
+        .context("failed to create OlmMachine for local secrets bundle import")?;
+    machine
+        .store()
+        .import_secrets_bundle(&bundle)
+        .await
+        .context("failed to import secrets bundle into Matrix crypto store")?;
+
+    Ok(())
+}
+
+async fn maybe_verify_own_device(client: &Client) -> Result<OwnDeviceVerificationOutcome> {
+    let Some(cross_signing_status) = client.encryption().cross_signing_status().await else {
+        return Ok(OwnDeviceVerificationOutcome {
+            status: "unavailable",
+            detail: "cross-signing status is not available yet".to_string(),
+        });
+    };
+
+    if !cross_signing_status.has_self_signing {
+        return Ok(OwnDeviceVerificationOutcome {
+            status: "missing_self_signing",
+            detail: "self-signing key is not available locally".to_string(),
+        });
+    }
+
+    let Some(own_device) = client.encryption().get_own_device().await? else {
+        return Ok(OwnDeviceVerificationOutcome {
+            status: "missing_device",
+            detail: "current Matrix device was not found in the local store".to_string(),
+        });
+    };
+
+    if own_device.is_verified() || own_device.is_verified_with_cross_signing() {
+        return Ok(OwnDeviceVerificationOutcome {
+            status: "already_verified",
+            detail: format!("device {} is already verified", own_device.device_id()),
+        });
+    }
+
+    own_device.verify().await?;
+
+    Ok(OwnDeviceVerificationOutcome {
+        status: "verified",
+        detail: format!("verified own device {}", own_device.device_id()),
+    })
+}
+
 /// Attempts to restore E2E encryption keys from the homeserver's E2E Backup.
 /// This is called after restoring a session, before syncing.
 /// If successful, we can decrypt messages without needing a Beeper key export.
+#[allow(dead_code)]
 async fn maybe_restore_e2e_backup(client: &Client) -> E2eBackupOutcome {
     let backups = client.encryption().backups();
 
@@ -2258,6 +3761,7 @@ async fn maybe_restore_e2e_backup(client: &Client) -> E2eBackupOutcome {
 
 /// Ensures this device's E2E encryption keys are backed up to the homeserver.
 /// This is called after syncing, so we have the latest session keys to upload.
+#[allow(dead_code)]
 async fn ensure_e2e_backup(client: &Client) -> E2eBackupOutcome {
     let backups = client.encryption().backups();
 
@@ -2546,8 +4050,70 @@ fn read_key_passphrase(path: &PathBuf) -> Result<String> {
         .to_owned())
 }
 
+fn read_optional_trimmed_secret(path: &PathBuf) -> Result<Option<String>> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+
+    let value = fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?
+        .trim()
+        .to_owned();
+
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(value))
+    }
+}
+
+fn recovery_candidate_paths(cfg: &ProbeConfig) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    if let Some(path) = cfg.recovery_key_path.clone() {
+        paths.push(path);
+    }
+    if let Some(path) = cfg.recovery_passphrase_path.clone() {
+        paths.push(path);
+    }
+
+    if paths.is_empty() {
+        paths.push(cfg.key_passphrase_path.clone());
+
+        if let Some(parent) = cfg.key_passphrase_path.parent() {
+            let legacy_path = parent.join(".e2ee-export-passphrase");
+            if legacy_path != cfg.key_passphrase_path {
+                paths.push(legacy_path);
+            }
+        }
+    }
+
+    let mut seen = HashSet::new();
+    paths
+        .into_iter()
+        .filter(|path| seen.insert(path.clone()))
+        .collect()
+}
+
 fn env_var(key: &str, default: &str) -> String {
     env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+fn env_flag(key: &str, default: bool) -> bool {
+    match env::var(key) {
+        Ok(value) => !matches!(value.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"),
+        Err(_) => default,
+    }
+}
+
+fn send_debug_enabled() -> bool {
+    env_flag("LIFERADAR_MATRIX_DEBUG_SEND", false)
+}
+
+fn send_debug(message: impl AsRef<str>) {
+    if send_debug_enabled() {
+        eprintln!("[matrix-send-debug] {}", message.as_ref());
+    }
 }
 
 fn iso_now() -> String {
@@ -2611,7 +4177,10 @@ fn modified_epoch_secs(metadata: &fs::Metadata) -> Result<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_sync_attempts, read_key_passphrase};
+    use super::{
+        bridge_targets_match, build_sync_attempts, persist_session_checkpoint, read_key_passphrase,
+        read_optional_session_file, SessionFile,
+    };
     use std::{
         fs,
         path::PathBuf,
@@ -2675,5 +4244,51 @@ mod tests {
         assert_eq!(value, "secret-passphrase");
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn persist_session_checkpoint_updates_next_batch_without_dropping_tokens() {
+        let path = temp_path("session");
+        let original = SessionFile {
+            access_token: "access-1".to_string(),
+            refresh_token: Some("refresh-1".to_string()),
+            user_id: "@user:example.com".to_string(),
+            device_id: "DEVICE1".to_string(),
+            homeserver: "https://example.com".to_string(),
+            next_batch: Some("old-batch".to_string()),
+            expires_at: Some("2026-04-17T12:00:00Z".to_string()),
+            expires_in: Some(3600),
+            saved_at: Some("2026-04-17T11:00:00Z".to_string()),
+        };
+        fs::write(&path, serde_json::to_string(&original).unwrap()).unwrap();
+
+        persist_session_checkpoint(&path, "new-batch").unwrap();
+
+        let updated = read_optional_session_file(&path).unwrap();
+        assert_eq!(updated.access_token, "access-1");
+        assert_eq!(updated.refresh_token.as_deref(), Some("refresh-1"));
+        assert_eq!(updated.next_batch.as_deref(), Some("new-batch"));
+        assert_eq!(updated.expires_in, Some(3600));
+        assert!(updated.saved_at.is_some());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn bridge_target_match_ignores_empty_state_keys() {
+        let left = super::BridgeTarget {
+            state_key: String::new(),
+            protocol_id: Some("telegram".to_string()),
+            channel_id: Some("user:8591267".to_string()),
+            display_name: Some("Telegram Saved Messages".to_string()),
+        };
+        let unrelated = super::BridgeTarget {
+            state_key: String::new(),
+            protocol_id: Some("whatsapp".to_string()),
+            channel_id: Some("491791389081@s.whatsapp.net".to_string()),
+            display_name: Some("Martin Bayerl".to_string()),
+        };
+
+        assert!(!bridge_targets_match(&left, &unrelated));
     }
 }

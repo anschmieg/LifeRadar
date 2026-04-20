@@ -6,5 +6,5 @@ services:
     image: liferadar-mcp:latest
     container_name: liferadar-mcp
     environment:
-      LIFE_RADAR_API_URL: http://host.docker.internal:8000
+      LIFERADAR_API_URL: http://host.docker.internal:8000
     restart: unless-stopped

@@ -4,6 +4,8 @@ set -euo pipefail
 : "${LIFERADAR_PROBE_INTERVAL_SEC:=300}"
 : "${LIFERADAR_MATRIX_RUST_RECOVER_HTTP_ON_FAILURE:=1}"
 : "${LIFERADAR_MATRIX_ENABLED:=true}"
+: "${LIFERADAR_MSGRAPH_ENABLED:=true}"
+: "${LIFERADAR_GOOGLE_CALENDAR_ENABLED:=true}"
 
 /opt/liferadar/bin/bootstrap.sh
 
@@ -33,11 +35,15 @@ while true; do
     fi
   fi
 
-  run_step "msgraph-sync" /opt/liferadar/bin/graph-sync-mail.mjs || true
-  run_step "google-calendar-ingest" /opt/liferadar/bin/google-calendar-ingest.mjs || true
+  if [[ "${LIFERADAR_MSGRAPH_ENABLED,,}" != "false" ]]; then
+    run_step "msgraph-sync" /opt/liferadar/bin/graph-sync-mail.mjs || true
+  fi
+  if [[ "${LIFERADAR_GOOGLE_CALENDAR_ENABLED,,}" != "false" ]]; then
+    run_step "google-calendar-ingest" /opt/liferadar/bin/google-calendar-ingest.mjs || true
+    run_step "google-calendar-reconcile" /opt/liferadar/bin/google-calendar-reconcile.mjs || true
+  fi
   run_step "derive-needs-state" /opt/liferadar/bin/derive-needs-state.sh || true
   run_step "extract-memory" /opt/liferadar/bin/extract-memory.mjs || true
-  run_step "google-calendar-reconcile" /opt/liferadar/bin/google-calendar-reconcile.mjs || true
 
   if [[ "$matrix_ingest_failed" -eq 1 ]]; then
     echo "[liferadar] matrix ingest failed; connector health should now reflect the failure" >&2

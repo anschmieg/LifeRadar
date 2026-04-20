@@ -71,19 +71,21 @@ In Coolify dashboard:
 ### 4.3 Configure environment variables
 Add these in Coolify → Environment Variables:
 
-```
-LIFE_RADAR_DB_HOST=YOUR_COOLIFY_DB_HOST
-LIFE_RADAR_DB_PORT=5432
-LIFE_RADAR_DB_NAME=liferadar
-LIFE_RADAR_DB_USER=liferadar
-LIFE_RADAR_DB_PASSWORD=YOUR_DB_PASSWORD
-LIFE_RADAR_API_KEY=generate_random_key
-LIFE_RADAR_MATRIX_BRIDGE_URL=http://life-radar-matrix-bridge:8010
-LIFE_RADAR_MATRIX_RUST_RECOVER_HTTP_ON_FAILURE=0
+``` 
+LIFERADAR_DB_HOST=YOUR_COOLIFY_DB_HOST
+LIFERADAR_DB_PORT=5432
+LIFERADAR_DB_NAME=life_radar
+LIFERADAR_DB_USER=life_radar
+LIFERADAR_DB_PASSWORD=YOUR_DB_PASSWORD
+LIFERADAR_API_KEY=generate_random_key
+LIFERADAR_MATRIX_ENABLED=true
+LIFERADAR_MATRIX_HOMESERVER_URL=https://your-homeserver.example.com
+LIFERADAR_MATRIX_BRIDGE_URL=http://life-radar-matrix-bridge:8010
+LIFERADAR_MATRIX_RUST_RECOVER_HTTP_ON_FAILURE=0
 MATRIX_RUST_SESSION_PATH=/path/to/matrix-session.json
 MATRIX_RUST_STORE=/path/to/matrix-rust-sdk-store
-MATRIX_E2EE_EXPORT_PATH=/path/to/beeper-e2e-keys.txt
-MATRIX_E2EE_EXPORT_PASSPHRASE_PATH=/path/to/.e2ee-export-passphrase
+MATRIX_ROOM_KEYS_PATH=/path/to/matrix-e2e-keys.txt
+MATRIX_ROOM_KEYS_PASSPHRASE_PATH=/path/to/.e2ee-export-passphrase
 MATRIX_RUST_KEY_IMPORT_MARKER=/path/to/room-key-import-marker.json
 OPENAI_API_KEY=sk-...
 ANTHROPIC_API_KEY=sk-ant-...
@@ -164,7 +166,7 @@ docker logs life-radar-mcp
 2. **Routing**: MCP is exposed at `liferadar.nothing.pink/mcp`, not a separate subdomain
 3. **Network**: All services use external `coolify` network managed by Coolify
 4. **SSL**: Let Coolify handle SSL via certresolver=letsencrypt
-5. **Matrix Send/Auth**: API calls an internal Matrix bridge service and write/MCP access can be protected with `LIFE_RADAR_API_KEY`
+5. **Matrix Send/Auth**: API calls an internal Matrix bridge service and write/MCP access can be protected with `LIFERADAR_API_KEY`
 
 ## Rollback Plan
 

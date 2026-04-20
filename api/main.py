@@ -10,6 +10,7 @@ import httpx
 from decimal import Decimal
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 from uuid import UUID
 
@@ -33,6 +34,13 @@ from api.models import (
     CalendarEventUpsert,
     MessageSendRequest,
     MessageSendResponse,
+    MatrixLoginRequest,
+    MatrixLoginResponse,
+    MatrixSessionStatus,
+    MatrixDeviceSummary,
+    MatrixDeviceVerificationAttempt,
+    MatrixDeviceVerificationDecisionRequest,
+    MatrixDeviceVerificationStartRequest,
     ConnectorStatus,
     ConnectorLoginStartRequest,
     ConnectorLoginStepRequest,
@@ -78,9 +86,21 @@ MATRIX_BRIDGE_URL = os.environ.get(
 CHAT_GATEWAY_URL = os.environ.get(
     "LIFERADAR_CHAT_GATEWAY_URL", "http://liferadar-chat-gateway:8020"
 )
-MATRIX_ENABLED = os.environ.get("LIFERADAR_MATRIX_ENABLED", "true").lower() != "false"
+MATRIX_HOMESERVER_URL = os.environ.get(
+    "LIFERADAR_MATRIX_HOMESERVER_URL", "https://matrix.beeper.com"
+).rstrip("/")
+MATRIX_SESSION_PATH = Path(
+    os.environ.get("MATRIX_RUST_SESSION_PATH", "/app/identity/matrix-session.json")
+)
+MATRIX_STORE_PATH = Path(
+    os.environ.get("MATRIX_RUST_STORE", "/app/identity/matrix-rust-sdk-store")
+)
 
 logger = logging.getLogger(__name__)
+
+
+def is_matrix_enabled() -> bool:
+    return os.environ.get("LIFERADAR_MATRIX_ENABLED", "true").lower() != "false"
 
 
 def _normalize_db_value(value):
@@ -151,6 +171,191 @@ def require_api_key(request: Request, allow_query_param: bool = False) -> None:
         )
 
 
+def _detect_matrix_identifier(
+    raw_identifier: str,
+    phone_country: Optional[str],
+    identifier_kind: Optional[str] = None,
+) -> dict:
+    identifier = raw_identifier.strip()
+    if not identifier:
+        raise HTTPException(status_code=400, detail="Identifier is required")
+
+    normalized_kind = (identifier_kind or "").strip().lower()
+    if normalized_kind:
+        if normalized_kind == "email":
+            if "@" not in identifier:
+                raise HTTPException(status_code=400, detail="Enter a valid email address")
+            return {
+                "type": "m.id.thirdparty",
+                "medium": "email",
+                "address": identifier.lower(),
+            }
+        if normalized_kind == "username":
+            return {"type": "m.id.user", "user": identifier}
+        if normalized_kind in {"matrix_id", "matrix"}:
+            return {"type": "m.id.user", "user": identifier}
+        raise HTTPException(status_code=400, detail="Unsupported Matrix identifier type")
+
+    if identifier.startswith("@") or ":" in identifier or ("@" not in identifier and identifier.replace("_", "").replace("-", "").isalnum()):
+        return {"type": "m.id.user", "user": identifier}
+
+    if "@" in identifier:
+        return {
+            "type": "m.id.thirdparty",
+            "medium": "email",
+            "address": identifier.lower(),
+        }
+
+    digits = "".join(ch for ch in identifier if ch.isdigit() or ch == "+")
+    if digits.startswith("+"):
+        return {
+            "type": "m.id.thirdparty",
+            "medium": "msisdn",
+            "address": digits[1:],
+        }
+
+    if digits and phone_country:
+        return {
+            "type": "m.id.phone",
+            "country": phone_country.strip().upper(),
+            "phone": digits,
+        }
+
+    return {"type": "m.id.user", "user": identifier}
+
+
+def _read_matrix_session_file() -> Optional[dict]:
+    if not MATRIX_SESSION_PATH.is_file():
+        return None
+    try:
+        return json.loads(MATRIX_SESSION_PATH.read_text())
+    except Exception:
+        logger.exception("Failed to read Matrix session file")
+        return None
+
+
+def _write_matrix_session_file(payload: dict) -> None:
+    MATRIX_SESSION_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = MATRIX_SESSION_PATH.with_suffix(".tmp")
+    temp_path.write_text(json.dumps(payload, indent=2))
+    temp_path.replace(MATRIX_SESSION_PATH)
+
+
+def _reset_matrix_local_identity_state() -> None:
+    if MATRIX_SESSION_PATH.exists():
+        MATRIX_SESSION_PATH.unlink()
+    if MATRIX_STORE_PATH.exists():
+        if MATRIX_STORE_PATH.is_dir():
+            import shutil
+            shutil.rmtree(MATRIX_STORE_PATH)
+        else:
+            MATRIX_STORE_PATH.unlink()
+
+
+async def _matrix_whoami(access_token: str, homeserver: str) -> dict:
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        response = await client.get(
+            f"{homeserver.rstrip('/')}/_matrix/client/v3/account/whoami",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    if response.status_code >= 400:
+        detail = ""
+        try:
+            detail = response.json().get("error", "")
+        except Exception:
+            detail = response.text[:400]
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=detail or "Matrix session is invalid",
+        )
+    return response.json()
+
+
+async def ensure_valid_matrix_session() -> dict:
+    session = _read_matrix_session_file()
+    if not session:
+        raise HTTPException(status_code=401, detail="No local Matrix session. Sign in again.")
+    try:
+        await _matrix_whoami(session["access_token"], session["homeserver"])
+    except HTTPException as exc:
+        if exc.status_code == 401:
+            _reset_matrix_local_identity_state()
+            raise HTTPException(
+                status_code=401,
+                detail="Matrix session expired or was revoked. Sign in again.",
+            ) from exc
+        raise
+    return session
+
+
+async def perform_matrix_password_login(body: MatrixLoginRequest) -> MatrixLoginResponse:
+    password = body.password.strip()
+    if not password:
+        raise HTTPException(status_code=400, detail="Password is required")
+
+    identifier = _detect_matrix_identifier(
+        body.identifier,
+        None,
+        body.identifier_kind,
+    )
+    request_body = {
+        "type": "m.login.password",
+        "identifier": identifier,
+        "password": password,
+        "initial_device_display_name": body.initial_device_display_name or "LifeRadar Matrix",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{MATRIX_HOMESERVER_URL}/_matrix/client/v3/login",
+                json=request_body,
+            )
+    except httpx.ConnectError as exc:
+        raise HTTPException(status_code=503, detail="Matrix homeserver is unavailable") from exc
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail="Matrix login timed out") from exc
+
+    payload = {}
+    if response.content:
+        try:
+            payload = response.json()
+        except Exception:
+            payload = {}
+
+    if response.status_code >= 400:
+        detail = payload.get("error") or response.text[:400] or "Matrix login failed"
+        raise HTTPException(status_code=response.status_code, detail=detail)
+
+    access_token = payload.get("access_token")
+    user_id = payload.get("user_id")
+    device_id = payload.get("device_id")
+    if not access_token or not user_id or not device_id:
+        raise HTTPException(status_code=502, detail="Matrix homeserver did not return a complete session")
+
+    _reset_matrix_local_identity_state()
+    _write_matrix_session_file(
+        {
+            "access_token": access_token,
+            "refresh_token": payload.get("refresh_token"),
+            "user_id": user_id,
+            "device_id": device_id,
+            "homeserver": MATRIX_HOMESERVER_URL,
+            "expires_at": None,
+            "expires_in": payload.get("expires_in_ms"),
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+
+    return MatrixLoginResponse(
+        status="logged_in",
+        user_id=user_id,
+        device_id=device_id,
+        homeserver=MATRIX_HOMESERVER_URL,
+        verification_required=True,
+    )
+
+
 async def load_conversation_for_send(conversation_id: UUID) -> asyncpg.Record:
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -184,6 +389,129 @@ async def run_matrix_send(room_id: str, content_text: str) -> str:
     if not event_id:
         raise HTTPException(status_code=502, detail="Matrix bridge did not return an event_id")
     return str(event_id)
+
+
+async def call_matrix_bridge(method: str, path: str, payload: Optional[dict] = None) -> dict:
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.request(
+                method=method,
+                url=f"{MATRIX_BRIDGE_URL.rstrip('/')}{path}",
+                json=payload,
+            )
+    except httpx.ConnectError as exc:
+        raise HTTPException(status_code=503, detail="Matrix bridge is unavailable") from exc
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail="Matrix bridge timed out") from exc
+
+    if response.status_code >= 400:
+        detail = response.text[:400]
+        raise HTTPException(status_code=response.status_code, detail=detail or "Matrix bridge error")
+
+    if not response.content:
+        return {}
+    return response.json()
+
+
+async def _matrix_list_devices(session: dict) -> list[MatrixDeviceSummary]:
+    homeserver = str(session.get("homeserver") or MATRIX_HOMESERVER_URL).rstrip("/")
+    access_token = session["access_token"]
+    user_id = session["user_id"]
+    current_device_id = session.get("device_id")
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        devices_response = await client.get(
+            f"{homeserver}/_matrix/client/v3/devices",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        if devices_response.status_code >= 400:
+            detail = ""
+            try:
+                detail = devices_response.json().get("error", "")
+            except Exception:
+                detail = devices_response.text[:400]
+            raise HTTPException(
+                status_code=devices_response.status_code,
+                detail=detail or "Could not load Matrix devices",
+            )
+        devices_payload = devices_response.json()
+        devices = devices_payload.get("devices") or []
+
+        query_payload = {
+            "timeout": 10000,
+            "device_keys": {
+                user_id: [
+                    str(item.get("device_id"))
+                    for item in devices
+                    if item.get("device_id")
+                ]
+            },
+        }
+        keys_response = await client.post(
+            f"{homeserver}/_matrix/client/v3/keys/query",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json=query_payload,
+        )
+        device_keys = {}
+        master_key = None
+        self_signing_key = None
+        if keys_response.status_code < 400:
+            keys_payload = keys_response.json()
+            device_keys = (
+                keys_payload.get("device_keys", {})
+                .get(user_id, {})
+            )
+            master_key = (
+                keys_payload.get("master_keys", {})
+                .get(user_id)
+            )
+            self_signing_key = (
+                keys_payload.get("self_signing_keys", {})
+                .get(user_id)
+            )
+
+    verified_device_ids: set[str] = set()
+    if master_key and self_signing_key:
+        for device_id, key_payload in device_keys.items():
+            signatures = key_payload.get("signatures", {}).get(user_id, {})
+            self_signing_values = set((self_signing_key.get("keys") or {}).values())
+            if self_signing_values and any(sig in self_signing_values for sig in signatures.values()):
+                verified_device_ids.add(device_id)
+
+    items: list[MatrixDeviceSummary] = []
+    for item in devices:
+        device_id = str(item.get("device_id") or "")
+        keys_payload = device_keys.get(device_id, {}) if isinstance(device_keys, dict) else {}
+        algorithms = keys_payload.get("algorithms") or []
+        supports_encryption = (
+            "m.olm.v1.curve25519-aes-sha2" in algorithms
+            and "m.megolm.v1.aes-sha2" in algorithms
+        )
+        items.append(
+            MatrixDeviceSummary(
+                device_id=device_id,
+                display_name=item.get("display_name"),
+                last_seen_ip=item.get("last_seen_ip"),
+                last_seen_ts=(
+                    datetime.fromtimestamp(item["last_seen_ts"] / 1000, tz=timezone.utc)
+                    if item.get("last_seen_ts")
+                    else None
+                ),
+                is_current=device_id == current_device_id,
+                is_verified=device_id in verified_device_ids if device_id else None,
+                supports_encryption=supports_encryption,
+            )
+        )
+
+    def sort_key(device: MatrixDeviceSummary) -> tuple[int, int, int, str]:
+        return (
+            1 if device.is_current else 0,
+            0 if device.is_verified else 1,
+            0 if device.supports_encryption else 1,
+            (device.display_name or device.device_id).lower(),
+        )
+
+    return sorted(items, key=sort_key)
 
 
 async def call_chat_gateway(method: str, path: str, payload: Optional[dict] = None) -> dict | list:
@@ -510,6 +838,490 @@ if (useCode) {{
 </html>"""
 
 
+def _matrix_device_verification_page(api_key: str) -> str:
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LifeRadar Matrix Device Verification</title>
+  <style>
+    :root {{
+      color-scheme: light;
+      --bg:#f4f1ea;
+      --panel:#fffaf2;
+      --text:#1f1b16;
+      --accent:#0f766e;
+      --accent-2:#134e4a;
+      --muted:#6b6257;
+      --border:#ddd3c3;
+      --success:#166534;
+      --error:#b91c1c;
+      --warn:#92400e;
+      --soft:#f7f2e8;
+    }}
+    * {{ box-sizing:border-box; }}
+    body {{ margin:0; font-family: ui-sans-serif, system-ui, sans-serif; background:
+      radial-gradient(circle at top, #fff8ed 0%, #f8f2e6 42%, var(--bg) 100%); color:var(--text); }}
+    main {{ max-width:900px; margin:48px auto; background:var(--panel); border:1px solid var(--border); border-radius:28px; padding:32px; box-shadow:0 16px 40px rgba(31,27,22,.08); }}
+    h1 {{ margin:0 0 8px; font-size:clamp(2rem,4vw,3rem); }}
+    h2 {{ margin:0 0 8px; font-size:1.2rem; }}
+    .muted {{ color:var(--muted); }}
+    .hero {{ display:flex; justify-content:space-between; gap:24px; align-items:flex-start; margin-bottom:28px; }}
+    .badge {{ display:inline-flex; align-items:center; gap:8px; font-size:.8rem; letter-spacing:.08em; text-transform:uppercase; color:var(--accent-2); background:#e6f4f1; border:1px solid #cce8e3; border-radius:999px; padding:6px 10px; }}
+    .card {{ border:1px solid var(--border); border-radius:20px; background:#fffdf8; padding:20px; }}
+    .stack {{ display:grid; gap:16px; }}
+    .status {{ border-radius:16px; padding:14px 16px; font-size:.95rem; }}
+    .status.info {{ background:#f5f8fa; border:1px solid #d6e3ea; }}
+    .status.success {{ background:#eefbf1; border:1px solid #b9e5c4; color:var(--success); }}
+    .status.error {{ background:#fff0f0; border:1px solid #f3c6c6; color:var(--error); }}
+    .status.warn {{ background:#fff7ed; border:1px solid #f5d0a6; color:var(--warn); }}
+    .grid {{ display:grid; gap:16px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }}
+    label {{ display:block; font-weight:600; margin:0 0 6px; }}
+    input {{ width:100%; padding:14px 16px; border-radius:14px; border:1px solid var(--border); font-size:16px; background:white; }}
+    input:focus {{ outline:none; border-color:var(--accent); box-shadow:0 0 0 3px rgba(15,118,110,.12); }}
+    button {{ background:var(--accent); color:white; border:none; border-radius:999px; padding:13px 18px; cursor:pointer; font-size:15px; font-weight:600; }}
+    button.secondary {{ background:#efe8dc; color:var(--text); }}
+    button.danger {{ background:#8b1e1e; }}
+    button:disabled {{ opacity:.55; cursor:wait; }}
+    .actions {{ display:flex; gap:12px; flex-wrap:wrap; }}
+    .hidden {{ display:none; }}
+    .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }}
+    .segmented {{ display:flex; gap:10px; flex-wrap:wrap; }}
+    .segmented input {{ position:absolute; opacity:0; pointer-events:none; width:1px; height:1px; }}
+    .choice {{ display:inline-flex; align-items:center; gap:8px; padding:12px 14px; border:1px solid var(--border); border-radius:999px; background:#faf6ee; cursor:pointer; font-weight:600; }}
+    .choice.active {{ border-color:#9fd5cb; background:#ecf8f5; color:var(--accent-2); }}
+    .device-list {{ display:grid; gap:12px; }}
+    .device-option {{ display:grid; gap:8px; border:1px solid var(--border); border-radius:18px; background:white; padding:16px; cursor:pointer; text-align:left; color:var(--text); font:inherit; }}
+    .device-option.active {{ border-color:#9fd5cb; box-shadow:0 0 0 3px rgba(15,118,110,.08); background:#f4fbf9; }}
+    .device-top {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-start; }}
+    .device-meta {{ display:flex; gap:8px; flex-wrap:wrap; }}
+    .device-name {{ font-size:1rem; font-weight:700; line-height:1.35; }}
+    .device-id {{ margin-top:4px; }}
+    .pill {{ display:inline-flex; align-items:center; gap:6px; border:1px solid var(--border); border-radius:999px; padding:6px 10px; font-size:.82rem; background:var(--soft); color:var(--muted); }}
+    .pill.good {{ background:#eefbf1; border-color:#b9e5c4; color:var(--success); }}
+    .pill.warn {{ background:#fff7ed; border-color:#f5d0a6; color:var(--warn); }}
+    .pill.info {{ background:#ecf8f5; border-color:#9fd5cb; color:var(--accent-2); }}
+    .emoji-grid {{ display:grid; gap:10px; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }}
+    .emoji {{ border:1px solid var(--border); border-radius:18px; background:white; padding:14px 10px; text-align:center; }}
+    .emoji .symbol {{ font-size:2rem; line-height:1; margin-bottom:6px; }}
+    pre {{ margin:0; white-space:pre-wrap; word-break:break-word; background:#fbf7f0; border:1px solid var(--border); border-radius:16px; padding:14px; max-height:220px; overflow:auto; }}
+    @media (max-width: 720px) {{
+      main {{ margin:20px; padding:22px; }}
+      .hero {{ flex-direction:column; }}
+    }}
+  </style>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <div>
+      <div class="badge">LifeRadar Matrix</div>
+      <h1>Device Verification</h1>
+      <p class="muted">Sign in in the format you actually use, let LifeRadar create a fresh Matrix device, then choose the existing trusted client that should verify it.</p>
+    </div>
+    <div class="card">
+      <h2>Expected flow</h2>
+      <div class="muted">1. Choose username, email, or full Matrix ID. 2. Sign in. 3. Pick a trusted device from the list. 4. Accept there. 5. Compare emojis and confirm here.</div>
+    </div>
+  </section>
+
+  <section class="stack">
+    <div class="card stack" id="loginPanel">
+      <div class="field">
+        <label>How do you sign in?</label>
+        <div class="segmented" id="identifierKinds">
+          <label class="choice active" for="kind-username"><input id="kind-username" type="radio" name="identifier_kind" value="username" checked />Username</label>
+          <label class="choice" for="kind-email"><input id="kind-email" type="radio" name="identifier_kind" value="email" />Email</label>
+          <label class="choice" for="kind-matrix"><input id="kind-matrix" type="radio" name="identifier_kind" value="matrix_id" />Matrix ID</label>
+        </div>
+      </div>
+      <div class="field">
+        <label for="identifier">Identifier</label>
+        <input id="identifier" placeholder="anschmieg" />
+        <div class="muted" id="identifierHelp">Use the Beeper username you normally type into a Matrix-style login form.</div>
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input id="password" type="password" placeholder="Matrix / Beeper password" />
+      </div>
+      <div class="actions">
+        <button id="login">Sign In</button>
+      </div>
+    </div>
+
+    <div class="card stack">
+      <div class="grid">
+        <div>
+          <label for="current_device_id">New LifeRadar device id</label>
+          <input id="current_device_id" class="mono" placeholder="DEVICEID" disabled />
+        </div>
+        <div>
+          <label for="user_id">Matrix user id</label>
+          <input id="user_id" class="mono" placeholder="@user:server" disabled />
+        </div>
+      </div>
+      <div class="muted" id="postLoginHint">Sign in first. After that, LifeRadar will show the trusted devices it can verify against.</div>
+    </div>
+
+    <div id="statusBox" class="status info">Sign in to create a fresh LifeRadar Matrix device. Then choose a trusted client and LifeRadar will start verification automatically.</div>
+
+    <div class="card stack hidden" id="devicePickerPanel">
+      <div>
+        <h2>Choose a trusted device</h2>
+        <div class="muted">Pick the client that should receive the verification request. Element is usually the most reliable choice.</div>
+      </div>
+      <div id="deviceList" class="device-list"></div>
+      <div class="actions">
+        <button id="retryDevices" class="secondary">Refresh Device List</button>
+        <button id="refresh" class="secondary hidden">Refresh Verification Status</button>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Attempt</h2>
+        <div class="muted">Attempt id</div>
+        <div id="attemptId" class="mono">not started</div>
+        <div class="muted" style="margin-top:12px;">Flow id</div>
+        <div id="flowId" class="mono">not started</div>
+      </div>
+      <div class="card">
+        <h2>Status</h2>
+        <div class="muted">Current state</div>
+        <div id="stateLabel" class="mono">idle</div>
+        <div class="muted" style="margin-top:12px;">Verifier device</div>
+        <div id="targetLabel" class="mono">—</div>
+      </div>
+    </div>
+
+    <div id="emojiPanel" class="card hidden stack">
+      <div>
+        <h2>Compare These Emojis</h2>
+        <div class="muted">Match these with the verification sheet shown in the trusted client you selected.</div>
+      </div>
+      <div id="emojiGrid" class="emoji-grid"></div>
+      <div class="muted">Decimals: <span id="decimals" class="mono">—</span></div>
+      <div class="actions">
+        <button id="confirm">Yes, they match</button>
+        <button id="reject" class="danger">No, they do not match</button>
+        <button id="cancel" class="secondary">Cancel</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Bridge Log</h2>
+      <pre id="logs">No bridge activity yet.</pre>
+    </div>
+  </section>
+</main>
+<script>
+const apiKey = {json.dumps(api_key)};
+let attemptId = null;
+let pollTimer = null;
+let currentSession = null;
+let selectedVerifierDeviceId = null;
+let selectedVerifierDeviceLabel = "";
+
+const identifierHelp = {{
+  username: "Use the Beeper username you normally type into a Matrix-style login form.",
+  email: "Use the email address attached to your Matrix or Beeper login.",
+  matrix_id: "Use your full Matrix ID, for example @user:beeper.com.",
+}};
+
+async function api(path, options={{}}) {{
+  const headers = Object.assign({{"Content-Type":"application/json"}}, options.headers || {{}});
+  if (apiKey) headers["X-API-Key"] = apiKey;
+  const response = await fetch(path, Object.assign({{}}, options, {{ headers }}));
+  const text = await response.text();
+  const data = text ? JSON.parse(text) : {{}};
+  if (!response.ok) throw new Error(data.detail || data.error || text || "Request failed");
+  return data;
+}}
+
+function selectedIdentifierKind() {{
+  const chosen = document.querySelector('input[name="identifier_kind"]:checked');
+  return chosen ? chosen.value : "username";
+}}
+
+function updateIdentifierUi() {{
+  const kind = selectedIdentifierKind();
+  for (const label of document.querySelectorAll('#identifierKinds .choice')) {{
+    const input = label.querySelector('input');
+    label.classList.toggle('active', !!input && input.checked);
+  }}
+  const input = document.getElementById("identifier");
+  if (kind === "email") {{
+    input.placeholder = "you@example.com";
+  }} else if (kind === "matrix_id") {{
+    input.placeholder = "@user:beeper.com";
+  }} else {{
+    input.placeholder = "anschmieg";
+  }}
+  document.getElementById("identifierHelp").textContent = identifierHelp[kind] || "";
+}}
+
+function setStatus(kind, text) {{
+  const box = document.getElementById("statusBox");
+  box.className = `status ${{kind}}`;
+  box.textContent = text;
+}}
+
+function formatIsoMinuteLocal(value) {{
+  if (!value) return null;
+  const when = new Date(value);
+  if (Number.isNaN(when.getTime())) return null;
+  const year = String(when.getFullYear());
+  const month = String(when.getMonth() + 1).padStart(2, "0");
+  const day = String(when.getDate()).padStart(2, "0");
+  const hours = String(when.getHours()).padStart(2, "0");
+  const minutes = String(when.getMinutes()).padStart(2, "0");
+  return `${{year}}-${{month}}-${{day}} ${{hours}}:${{minutes}}`;
+}}
+
+function describeLastSeen(device) {{
+  if (!device.last_seen_ts) return "Last seen unknown";
+  const formatted = formatIsoMinuteLocal(device.last_seen_ts);
+  return formatted ? `Last seen ${{formatted}}` : "Last seen unknown";
+}}
+
+function renderAttempt(data) {{
+  attemptId = data.attempt_id;
+  document.getElementById("attemptId").textContent = data.attempt_id || "—";
+  document.getElementById("flowId").textContent = data.flow_id || "waiting";
+  document.getElementById("stateLabel").textContent = data.status || "unknown";
+  document.getElementById("targetLabel").textContent = data.target_device_id || "—";
+  document.getElementById("refresh").classList.remove("hidden");
+  document.getElementById("logs").textContent = (data.logs && data.logs.length ? data.logs.join("\\n") : "No bridge activity yet.");
+
+  const emojiPanel = document.getElementById("emojiPanel");
+  const emojiGrid = document.getElementById("emojiGrid");
+  const shouldShowEmoji = data.status === "waiting_for_confirm" && data.emojis && data.emojis.length;
+  emojiPanel.classList.toggle("hidden", !shouldShowEmoji);
+  emojiGrid.innerHTML = "";
+  if (shouldShowEmoji) {{
+    for (const item of data.emojis) {{
+      const node = document.createElement("div");
+      node.className = "emoji";
+      node.innerHTML = `<div class="symbol">${{item.symbol}}</div><div>${{item.description}}</div>`;
+      emojiGrid.appendChild(node);
+    }}
+  }}
+  document.getElementById("decimals").textContent = (data.decimals || []).length ? data.decimals.join(" · ") : "—";
+
+  if (data.error) {{
+    setStatus("error", data.error);
+  }} else if (data.status === "done") {{
+    setStatus("success", data.detail || "Verification completed.");
+  }} else if (data.status === "cancelled") {{
+    setStatus("warn", data.detail || data.error || "Verification was cancelled.");
+  }} else if (data.status === "waiting_for_accept") {{
+    const target = selectedVerifierDeviceLabel || data.target_device_id || "your selected device";
+    setStatus("info", `Verification started. Please accept on ${{target}} to proceed.`);
+  }} else if (data.status === "waiting_for_emoji") {{
+    const target = selectedVerifierDeviceLabel || data.target_device_id || "your selected device";
+    setStatus("info", `Waiting for ${{target}} to show the emoji comparison.`);
+  }} else if (data.status === "waiting_for_confirm") {{
+    setStatus("warn", "Compare the emojis with your trusted client, then confirm or reject them here.");
+  }} else if (data.status === "confirming") {{
+    setStatus("info", "Waiting for Matrix to finish confirming the verification.");
+  }} else {{
+    setStatus("info", data.detail || "Verification is in progress.");
+  }}
+
+  if (pollTimer) clearTimeout(pollTimer);
+  if (!data.done) {{
+    pollTimer = setTimeout(refreshAttempt, 2000);
+  }}
+}}
+
+function renderSession(session) {{
+  currentSession = session;
+  const hasSession = !!(session && session.has_session);
+  document.getElementById("loginPanel").classList.toggle("hidden", hasSession);
+  document.getElementById("devicePickerPanel").classList.toggle("hidden", !hasSession);
+  document.getElementById("current_device_id").value = hasSession ? (session.device_id || "") : "";
+  document.getElementById("user_id").value = hasSession ? (session.user_id || "") : "";
+  document.getElementById("postLoginHint").textContent = hasSession
+    ? "Choose which existing trusted client should receive the verification request."
+    : "Sign in first. After that, LifeRadar will show the trusted devices it can verify against.";
+}}
+
+function renderDeviceList(devices) {{
+  const list = document.getElementById("deviceList");
+  list.innerHTML = "";
+  const verifierCandidates = devices.filter((device) => !device.is_current);
+  if (!verifierCandidates.length) {{
+    list.innerHTML = '<div class="muted">No other devices are available yet. Sign in to Element or Beeper on another client first.</div>';
+    return;
+  }}
+
+  if (!selectedVerifierDeviceId || !verifierCandidates.some((device) => device.device_id === selectedVerifierDeviceId)) {{
+    selectedVerifierDeviceId = verifierCandidates[0].device_id;
+    selectedVerifierDeviceLabel = verifierCandidates[0].display_name || verifierCandidates[0].device_id;
+  }}
+
+  for (const device of verifierCandidates) {{
+    const label = device.display_name || `Matrix device ${{device.device_id}}`;
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "device-option" + (device.device_id === selectedVerifierDeviceId ? " active" : "");
+    const verificationPill = device.is_verified
+      ? '<span class="pill good">Verified</span>'
+      : '<span class="pill warn">Not verified yet</span>';
+    const cryptoPill = device.supports_encryption
+      ? '<span class="pill info">Encryption ready</span>'
+      : '<span class="pill warn">No encryption keys</span>';
+    card.innerHTML = `
+      <div class="device-top">
+        <div>
+          <div class="device-name">${{label}}</div>
+          <div class="mono device-id">${{device.device_id}}</div>
+        </div>
+        <div class="device-meta">${{verificationPill}}${{cryptoPill}}</div>
+      </div>
+      <div class="muted">${{describeLastSeen(device)}}</div>
+    `;
+    card.onclick = async () => {{
+      selectedVerifierDeviceId = device.device_id;
+      selectedVerifierDeviceLabel = label;
+      renderDeviceList(devices);
+      await startVerification();
+    }};
+    list.appendChild(card);
+  }}
+}}
+
+async function loadSession() {{
+  try {{
+    const session = await api("/matrix/session");
+    renderSession(session);
+    if (session.has_session) {{
+      await loadDevices();
+    }}
+  }} catch (error) {{
+    setStatus("error", error.message || "Failed to load Matrix session status.");
+  }}
+}}
+
+async function loadDevices() {{
+  if (!(currentSession && currentSession.has_session)) return;
+  try {{
+    const devices = await api("/matrix/devices");
+    renderDeviceList(devices);
+  }} catch (error) {{
+    setStatus("error", error.message || "Failed to load available Matrix devices.");
+  }}
+}}
+
+async function refreshAttempt() {{
+  if (!attemptId) return;
+  try {{
+    const data = await api(`/matrix/verification/${{attemptId}}`);
+    renderAttempt(data);
+  }} catch (error) {{
+    setStatus("error", error.message || "Failed to refresh verification status.");
+  }}
+}}
+
+async function startVerification() {{
+  if (!selectedVerifierDeviceId) {{
+    setStatus("error", "Choose a trusted device first.");
+    return;
+  }}
+  setStatus("info", `Starting verification with ${{selectedVerifierDeviceLabel || selectedVerifierDeviceId}}…`);
+  try {{
+    const data = await api("/matrix/verification/start", {{
+      method: "POST",
+      body: JSON.stringify({{ target_device_id: selectedVerifierDeviceId }})
+    }});
+    renderAttempt(data);
+  }} catch (error) {{
+    setStatus("error", error.message || "Failed to start verification.");
+  }}
+}}
+
+document.getElementById("login").onclick = async () => {{
+  const identifier = document.getElementById("identifier").value.trim();
+  const password = document.getElementById("password").value;
+  if (!identifier || !password) {{
+    setStatus("error", "Enter your identifier and password first.");
+    return;
+  }}
+  setStatus("info", "Signing in and creating a fresh LifeRadar Matrix device…");
+  try {{
+    const session = await api("/matrix/login", {{
+      method: "POST",
+      body: JSON.stringify({{
+        identifier,
+        password,
+        identifier_kind: selectedIdentifierKind()
+      }})
+    }});
+    renderSession({{
+      has_session: true,
+      user_id: session.user_id,
+      device_id: session.device_id,
+      homeserver: session.homeserver
+    }});
+    selectedVerifierDeviceId = null;
+    selectedVerifierDeviceLabel = "";
+    setStatus("warn", `Signed in as ${{session.user_id}}. Now choose which existing trusted device should verify LifeRadar device ${{session.device_id}}.`);
+    document.getElementById("password").value = "";
+    await loadDevices();
+  }} catch (error) {{
+    setStatus("error", error.message || "Matrix login failed.");
+  }}
+}};
+
+document.getElementById("retryDevices").onclick = loadDevices;
+document.getElementById("refresh").onclick = refreshAttempt;
+document.getElementById("confirm").onclick = async () => {{
+  if (!attemptId) return;
+  try {{
+    const data = await api(`/matrix/verification/${{attemptId}}/confirm`, {{
+      method: "POST",
+      body: JSON.stringify({{ decision: "yes" }})
+    }});
+    renderAttempt(data);
+  }} catch (error) {{
+    setStatus("error", error.message || "Failed to confirm verification.");
+  }}
+}};
+document.getElementById("reject").onclick = async () => {{
+  if (!attemptId) return;
+  try {{
+    const data = await api(`/matrix/verification/${{attemptId}}/confirm`, {{
+      method: "POST",
+      body: JSON.stringify({{ decision: "no" }})
+    }});
+    renderAttempt(data);
+  }} catch (error) {{
+    setStatus("error", error.message || "Failed to reject verification.");
+  }}
+}};
+document.getElementById("cancel").onclick = async () => {{
+  if (!attemptId) return;
+  try {{
+    const data = await api(`/matrix/verification/${{attemptId}}/confirm`, {{
+      method: "POST",
+      body: JSON.stringify({{ decision: "cancel" }})
+    }});
+    renderAttempt(data);
+  }} catch (error) {{
+    setStatus("error", error.message || "Failed to cancel verification.");
+  }}
+}};
+for (const radio of document.querySelectorAll('input[name="identifier_kind"]')) {{
+  radio.addEventListener("change", updateIdentifierUi);
+}}
+updateIdentifierUi();
+loadSession();
+</script>
+</body>
+</html>"""
+
+
 # --- MCP proxy (Streamable HTTP) ---
 async def _proxy_to_mcp_impl(request: Request, path: str = ""):
     require_api_key(request)
@@ -629,6 +1441,86 @@ async def telegram_auth_page(request: Request):
 async def whatsapp_auth_page(request: Request):
     require_api_key(request, allow_query_param=True)
     return HTMLResponse(_connector_auth_page("whatsapp", _provided_api_key(request, True)))
+
+
+@app.get("/auth/matrix-device", response_class=HTMLResponse)
+async def matrix_device_verification_page(request: Request):
+    require_api_key(request, allow_query_param=True)
+    return HTMLResponse(_matrix_device_verification_page(_provided_api_key(request, True)))
+
+
+@app.get("/matrix/session", response_model=MatrixSessionStatus)
+async def matrix_session_status(request: Request):
+    require_api_key(request)
+    session = _read_matrix_session_file()
+    if not session:
+        return MatrixSessionStatus(has_session=False)
+    try:
+        await _matrix_whoami(session["access_token"], session["homeserver"])
+    except HTTPException as exc:
+        if exc.status_code == 401:
+            _reset_matrix_local_identity_state()
+            return MatrixSessionStatus(has_session=False)
+        raise
+    return MatrixSessionStatus(
+        has_session=True,
+        user_id=session.get("user_id"),
+        device_id=session.get("device_id"),
+        homeserver=session.get("homeserver"),
+    )
+
+
+@app.get("/matrix/devices", response_model=list[MatrixDeviceSummary])
+async def matrix_devices(request: Request):
+    require_api_key(request)
+    session = await ensure_valid_matrix_session()
+    return await _matrix_list_devices(session)
+
+
+@app.post("/matrix/login", response_model=MatrixLoginResponse)
+async def matrix_login(
+    body: MatrixLoginRequest,
+    request: Request,
+):
+    require_api_key(request)
+    return await perform_matrix_password_login(body)
+
+
+@app.post("/matrix/verification/start", response_model=MatrixDeviceVerificationAttempt)
+async def start_matrix_device_verification(
+    body: MatrixDeviceVerificationStartRequest,
+    request: Request,
+):
+    require_api_key(request)
+    await ensure_valid_matrix_session()
+    payload = await call_matrix_bridge(
+        "POST",
+        "/verification/start",
+        body.model_dump(),
+    )
+    return payload
+
+
+@app.get("/matrix/verification/{attempt_id}", response_model=MatrixDeviceVerificationAttempt)
+async def matrix_device_verification_status(attempt_id: str, request: Request):
+    require_api_key(request)
+    payload = await call_matrix_bridge("GET", f"/verification/{attempt_id}")
+    return payload
+
+
+@app.post("/matrix/verification/{attempt_id}/confirm", response_model=MatrixDeviceVerificationAttempt)
+async def matrix_device_verification_confirm(
+    attempt_id: str,
+    body: MatrixDeviceVerificationDecisionRequest,
+    request: Request,
+):
+    require_api_key(request)
+    payload = await call_matrix_bridge(
+        "POST",
+        f"/verification/{attempt_id}/confirm",
+        body.model_dump(),
+    )
+    return payload
 
 
 @app.get("/openapi.json")
@@ -1075,7 +1967,7 @@ async def send_message(request: MessageSendRequest, http_request: Request):
     conversation = await load_conversation_for_send(request.conversation_id)
 
     if conversation["source"] == "matrix":
-        if not MATRIX_ENABLED:
+        if not is_matrix_enabled():
             raise HTTPException(
                 status_code=501,
                 detail="Sending messages for source 'matrix' is disabled (LIFERADAR_MATRIX_ENABLED=false)",

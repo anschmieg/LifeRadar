@@ -18,6 +18,11 @@ services:
       LIFERADAR_MATRIX_BRIDGE_URL: http://liferadar-matrix-bridge:8010
       LIFERADAR_CHAT_GATEWAY_URL: http://liferadar-chat-gateway:8020
       LIFERADAR_MATRIX_ENABLED: "${LIFERADAR_MATRIX_ENABLED:-true}"
+      LIFERADAR_MATRIX_HOMESERVER_URL: "${LIFERADAR_MATRIX_HOMESERVER_URL:-}"
+      MATRIX_RUST_SESSION_PATH: "${MATRIX_RUST_SESSION_PATH:-/app/identity/matrix-session.json}"
+      MATRIX_RUST_STORE: "${MATRIX_RUST_STORE:-/app/identity/matrix-rust-sdk-store}"
+    volumes:
+      - identity:/app/identity
     expose:
       - "8000"
     extra_hosts:
@@ -68,7 +73,8 @@ services:
   liferadar-worker:
     build:
       context: .
-      dockerfile: Dockerfile.worker
+      dockerfile: Dockerfile.matrix-services
+      target: worker-runtime
     container_name: liferadar-worker
     environment:
       LIFERADAR_DB_HOST: "${LIFERADAR_DB_HOST}"
@@ -87,7 +93,7 @@ services:
       LIFERADAR_MATRIX_RUST_TIMEOUT_SEC: "${LIFERADAR_MATRIX_RUST_TIMEOUT_SEC}"
       LIFERADAR_MATRIX_RUST_RECOVER_HTTP_ON_FAILURE: "${LIFERADAR_MATRIX_RUST_RECOVER_HTTP_ON_FAILURE}"
       LIFERADAR_MATRIX_ENABLED: "${LIFERADAR_MATRIX_ENABLED:-true}"
-      LIFERADAR_MATRIX_HOMESERVER_URL: "${LIFERADAR_MATRIX_HOMESERVER_URL:-https://matrix.beeper.com}"
+      LIFERADAR_MATRIX_HOMESERVER_URL: "${LIFERADAR_MATRIX_HOMESERVER_URL}"
       MSGRAPH_CLIENT_ID: "${MSGRAPH_CLIENT_ID}"
       MSGRAPH_CLIENT_SECRET: "${MSGRAPH_CLIENT_SECRET}"
       MSGRAPH_TENANT_ID: "${MSGRAPH_TENANT_ID}"
@@ -139,7 +145,8 @@ services:
   liferadar-matrix-bridge:
     build:
       context: .
-      dockerfile: Dockerfile.matrix-bridge
+      dockerfile: Dockerfile.matrix-services
+      target: matrix-bridge-runtime
     container_name: liferadar-matrix-bridge
     environment:
       LIFERADAR_DB_HOST: "${LIFERADAR_DB_HOST}"
