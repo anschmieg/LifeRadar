@@ -5,7 +5,7 @@ import { GatewayDb } from './src/db.mjs';
 import { TelegramConnector } from './src/providers/telegram.mjs';
 import { WhatsAppConnector } from './src/providers/whatsapp.mjs';
 
-const logger = pino({ name: 'life-radar-chat-gateway' });
+const logger = pino({ name: 'liferadar-chat-gateway' });
 const app = express();
 app.use(express.json({ limit: '1mb' }));
 
@@ -19,11 +19,11 @@ function boolEnv(name, fallback = false) {
 }
 
 function sessionDir() {
-  return process.env.LIFE_RADAR_CONNECTOR_SESSION_DIR || '/app/connectors';
+  return process.env.LIFERADAR_CONNECTOR_SESSION_DIR || '/app/connectors';
 }
 
 function registerConnectors() {
-  if (boolEnv('LIFE_RADAR_TELEGRAM_ENABLED', true)) {
+  if (boolEnv('LIFERADAR_TELEGRAM_ENABLED', true)) {
     connectors.set('telegram', new TelegramConnector({
       db,
       logger,
@@ -32,13 +32,13 @@ function registerConnectors() {
     }));
   }
 
-  if (boolEnv('LIFE_RADAR_WHATSAPP_ENABLED', true)) {
+  if (boolEnv('LIFERADAR_WHATSAPP_ENABLED', true)) {
     connectors.set('whatsapp', new WhatsAppConnector({
       db,
       logger,
       provider: 'whatsapp',
       sessionDir: `${sessionDir()}/whatsapp`,
-      unofficialAllowed: boolEnv('LIFE_RADAR_WHATSAPP_UNOFFICIAL_ALLOWED', true),
+      unofficialAllowed: boolEnv('LIFERADAR_WHATSAPP_UNOFFICIAL_ALLOWED', true),
     }));
   }
 }
@@ -146,7 +146,7 @@ app.post('/internal/send', async (req, res) => {
   }
 });
 
-const port = Number.parseInt(process.env.LIFE_RADAR_CHAT_GATEWAY_PORT || '8020', 10);
+const port = Number.parseInt(process.env.LIFERADAR_CHAT_GATEWAY_PORT || '8020', 10);
 app.listen(port, () => {
   logger.info({ port, connectors: Array.from(connectors.keys()) }, 'chat gateway listening');
 });

@@ -7,7 +7,24 @@ PostgreSQL/pgvector, then exposes everything via an MCP API for Hermes Agent.
 
 **Status:** Phase 1 complete. See SPEC.md for full roadmap.
 
-## Quick Start
+## Local Matrix Harness
+
+```bash
+cp .env.local.example .env.local
+# Set LIFERADAR_MATRIX_HOMESERVER_URL in .env.local
+bin/localdev/matrix-up.sh
+bin/localdev/matrix-auth.sh
+bin/localdev/matrix-smoke.sh
+```
+
+If you set `LIFERADAR_API_KEY`, include it as `Authorization: Bearer ...` or `X-API-Key`
+when calling write endpoints such as `POST /messages/send` or when proxying through `/mcp`.
+In production, MCP is exposed at `https://liferadar.nothing.pink/mcp`; do not publish a
+separate MCP subdomain.
+
+The local Matrix harness is self-contained and uses [docker-compose.local.yaml](/Users/adrian/Projects/LifeRadar/docker-compose.local.yaml:1). It keeps local state under `./data/` and intentionally disables Outlook, Google Calendar, and the legacy SQLite Matrix backfill path by default so Matrix testing stays isolated.
+
+## General Dev Compose
 
 ```bash
 cp .env.example .env
@@ -15,11 +32,6 @@ cp .env.example .env
 docker compose up -d
 docker compose logs -f worker
 ```
-
-If you set `LIFE_RADAR_API_KEY`, include it as `Authorization: Bearer ...` or `X-API-Key`
-when calling write endpoints such as `POST /messages/send` or when proxying through `/mcp`.
-In production, MCP is exposed at `https://liferadar.nothing.pink/mcp`; do not publish a
-separate MCP subdomain.
 
 ## Architecture
 
@@ -34,12 +46,12 @@ separate MCP subdomain.
 
 - Telegram uses a direct personal-account connector with browser-assisted login.
 - WhatsApp uses a persistent consumer multi-device session with QR login.
-- Matrix/Beeper is preserved as a legacy connector and is disabled by default via `LIFE_RADAR_BEEPER_ENABLED=false`.
+- Matrix runs through the first-class `liferadar-matrix` client path and is controlled by `LIFERADAR_MATRIX_ENABLED`.
 - Matrix sync now persists a global `matrix_sync_checkpoint` plus per-conversation
   `matrix_room_checkpoint` metadata to avoid re-walking full history each cycle.
 - The raw HTTP Matrix path is retained as an explicit recovery mode, not the normal ingest path.
 - `POST /messages/send` performs direct sends for `source='telegram'` and `source='whatsapp'`.
-- Matrix send remains available only when the Beeper integration is explicitly re-enabled.
+- Matrix send remains available when `LIFERADAR_MATRIX_ENABLED=true` and a valid Matrix session is present.
 
 ## Phases
 
@@ -60,4 +72,13 @@ Utility scripts live in `bin/`. For the Nextcloud legacy migration compare statu
 
 ```bash
 ./bin/nextcloud-status
+```
+
+For local Matrix work, use:
+
+```bash
+bin/localdev/matrix-up.sh
+bin/localdev/matrix-auth.sh
+bin/localdev/matrix-smoke.sh --decryption
+bin/localdev/matrix-reset.sh
 ```

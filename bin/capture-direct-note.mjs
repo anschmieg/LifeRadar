@@ -2,14 +2,14 @@
 import { randomUUID } from 'node:crypto';
 import { env, nowIso, runPsql, sqlJson, sqlLiteral } from '../lib/runtime.mjs';
 
-const noteText = process.argv.slice(2).join(' ').trim() || env('LIFE_RADAR_NOTE_TEXT');
+const noteText = process.argv.slice(2).join(' ').trim() || env('LIFERADAR_NOTE_TEXT');
 if (!noteText) {
   console.error('usage: capture-direct-note.mjs "<note text>"');
   process.exit(1);
 }
 
-const inboxId = env('LIFE_RADAR_DIRECT_NOTE_INBOX', 'direct-notes');
-const userId = env('LIFE_RADAR_USER_ID', 'adrian');
+const inboxId = env('LIFERADAR_DIRECT_NOTE_INBOX', 'direct-notes');
+const userId = env('LIFERADAR_USER_ID', 'adrian');
 const now = new Date();
 
 function parseTimeParts(rawHour, rawMinute, meridiem) {

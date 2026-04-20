@@ -21,12 +21,12 @@ from hypercorn.asyncio import serve
 import asyncio
 
 # LifeRadar API base URL — use host.docker.internal to reach API container
-LIFE_RADAR_API_URL = os.environ.get(
-    "LIFE_RADAR_API_URL",
+LIFERADAR_API_URL = os.environ.get(
+    "LIFERADAR_API_URL",
     "http://host.docker.internal:8000"
 )
-LIFE_RADAR_PUBLIC_API_URL = os.environ.get("LIFE_RADAR_PUBLIC_API_URL", "").strip()
-LIFE_RADAR_API_KEY = os.environ.get("LIFE_RADAR_API_KEY", "").strip()
+LIFERADAR_PUBLIC_API_URL = os.environ.get("LIFERADAR_PUBLIC_API_URL", "").strip()
+LIFERADAR_API_KEY = os.environ.get("LIFERADAR_API_KEY", "").strip()
 
 APP_NAME = "liferadar-mcp"
 VERSION = "1.0.0"
@@ -173,7 +173,7 @@ def _normalize_api_response(data: Any) -> list[dict]:
 
 async def _get_json(url: str, params: dict | None = None) -> list[dict]:
     async with httpx.AsyncClient(timeout=30.0) as client:
-        headers = {"x-api-key": LIFE_RADAR_API_KEY} if LIFE_RADAR_API_KEY else {}
+        headers = {"x-api-key": LIFERADAR_API_KEY} if LIFERADAR_API_KEY else {}
         response = await client.get(url, params=params or {}, headers=headers)
         response.raise_for_status()
         return _normalize_api_response(response.json())
@@ -182,10 +182,10 @@ async def _get_json(url: str, params: dict | None = None) -> list[dict]:
 async def call_api(path: str, params: dict | None = None) -> list[dict]:
     """Make a GET request to the LifeRadar API and return parsed JSON."""
     path = path.lstrip("/")
-    internal_url = f"{LIFE_RADAR_API_URL.rstrip('/')}/{path}"
+    internal_url = f"{LIFERADAR_API_URL.rstrip('/')}/{path}"
     public_url = (
-        f"{LIFE_RADAR_PUBLIC_API_URL.rstrip('/')}/{path}"
-        if LIFE_RADAR_PUBLIC_API_URL
+        f"{LIFERADAR_PUBLIC_API_URL.rstrip('/')}/{path}"
+        if LIFERADAR_PUBLIC_API_URL
         else ""
     )
     primary_url = public_url or internal_url
@@ -212,10 +212,10 @@ async def call_api(path: str, params: dict | None = None) -> list[dict]:
 
 async def call_api_post(path: str, body: dict | None = None) -> list[dict]:
     """Make a POST request to the LifeRadar API and return parsed JSON."""
-    url = f"{LIFE_RADAR_API_URL.rstrip('/')}/{path.lstrip('/')}"
+    url = f"{LIFERADAR_API_URL.rstrip('/')}/{path.lstrip('/')}"
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
-            headers = {"x-api-key": LIFE_RADAR_API_KEY} if LIFE_RADAR_API_KEY else {}
+            headers = {"x-api-key": LIFERADAR_API_KEY} if LIFERADAR_API_KEY else {}
             response = await client.post(url, json=body or {}, headers=headers)
             response.raise_for_status()
             data = response.json()
@@ -338,14 +338,22 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="send-message",
-            description="Send a message in a direct chat conversation (Telegram, WhatsApp, or Matrix when explicitly re-enabled). Requires user approval. Returns a message_id.",
+            description="Send a message in a direct chat conversation (Telegram, WhatsApp, or Matrix when explicitly re-enabled). The client must first prompt the user for explicit approval of this exact send action. Returns a message_id.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "conversation_id": {"type": "string", "description": "UUID of the conversation"},
                     "content_text": {"type": "string", "description": "Message text to send"},
+                    "user_approved": {
+                        "type": "boolean",
+                        "description": "Must be true only after the client has explicitly asked the user to approve sending this exact message.",
+                    },
+                    "approval_note": {
+                        "type": "string",
+                        "description": "Short note capturing the user's explicit approval, for example 'User approved sending this exact message just now.'",
+                    },
                 },
-                "required": ["conversation_id", "content_text"],
+                "required": ["conversation_id", "content_text", "user_approved", "approval_note"],
             },
         ),
         Tool(
@@ -487,7 +495,23 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             else:
                 result = await call_api("calendar/events", params)
         case "send-message":
-            result = await call_api_post("messages/send", params)
+            if not params.get("user_approved"):
+                result = [{
+                    "error": (
+                        "Explicit user approval is required before sending a message. "
+                        "Prompt the user to approve this exact action, then retry with "
+                        "user_approved=true and a non-empty approval_note."
+                    )
+                }]
+            elif not str(params.get("approval_note", "")).strip():
+                result = [{
+                    "error": (
+                        "approval_note is required. Record a short note confirming that the "
+                        "user explicitly approved this exact send action, then retry."
+                    )
+                }]
+            else:
+                result = await call_api_post("messages/send", params)
         case "memories":
             result = await call_api("memories", params)
         case "probe_status":

@@ -251,12 +251,74 @@ class MessageSendRequest(BaseModel):
     """Schema for sending a message via Matrix/Outlook."""
     conversation_id: UUID
     content_text: str
+    user_approved: bool = False
+    approval_note: str = Field(
+        ...,
+        min_length=1,
+        description="Short note confirming the user explicitly approved sending this exact message.",
+    )
 
 
 class MessageSendResponse(BaseModel):
     """Response for message send endpoint."""
     status: str
     message_id: str
+
+
+class MatrixDeviceVerificationStartRequest(BaseModel):
+    target_device_id: str
+
+
+class MatrixDeviceVerificationDecisionRequest(BaseModel):
+    decision: str
+
+
+class MatrixDeviceVerificationAttempt(BaseModel):
+    attempt_id: str
+    target_device_id: str
+    status: str
+    detail: Optional[str] = None
+    flow_id: Optional[str] = None
+    emojis: list[dict] = Field(default_factory=list)
+    decimals: list[int] = Field(default_factory=list)
+    error: Optional[str] = None
+    done: bool = False
+    latest_event: Optional[str] = None
+    started_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    logs: list[str] = Field(default_factory=list)
+
+
+class MatrixDeviceSummary(BaseModel):
+    device_id: str
+    display_name: Optional[str] = None
+    last_seen_ip: Optional[str] = None
+    last_seen_ts: Optional[datetime] = None
+    is_current: bool = False
+    is_verified: Optional[bool] = None
+    supports_encryption: bool = False
+
+
+class MatrixLoginRequest(BaseModel):
+    identifier: str
+    password: str
+    identifier_kind: Optional[str] = None
+    initial_device_display_name: Optional[str] = None
+
+
+class MatrixSessionStatus(BaseModel):
+    has_session: bool
+    user_id: Optional[str] = None
+    device_id: Optional[str] = None
+    homeserver: Optional[str] = None
+
+
+class MatrixLoginResponse(BaseModel):
+    status: str
+    user_id: str
+    device_id: str
+    homeserver: str
+    verification_required: bool = True
 
 
 class ConnectorAccount(TimestampedModel):

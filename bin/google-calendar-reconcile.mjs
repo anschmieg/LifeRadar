@@ -19,7 +19,7 @@ const authKey = 'google_calendar_auth';
 const runtimeKey = 'google_calendar_reconcile';
 
 if (!clientId || !clientSecret || !envRefreshToken) {
-  console.log('life-radar google calendar reconcile skipped: credentials not configured');
+  console.log('liferadar google calendar reconcile skipped: credentials not configured');
   process.exit(0);
 }
 
@@ -194,4 +194,4 @@ setRuntimeMetadata(runtimeKey, {
   events_cancelled: cancelled,
 });
 
-console.log(`life-radar google calendar reconcile complete: created=${created} updated=${updated} cancelled=${cancelled}`);
+console.log(`liferadar google calendar reconcile complete: created=${created} updated=${updated} cancelled=${cancelled}`);

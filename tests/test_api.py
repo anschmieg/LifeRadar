@@ -29,16 +29,16 @@ class FakePool:
 
 class LifeRadarApiTests(unittest.TestCase):
     def setUp(self):
-        self.client = TestClient(app)
         self.env_patcher = patch.dict(
             os.environ,
             {
-                "LIFE_RADAR_API_KEY": "secret-key",
-                "LIFE_RADAR_BEEPER_ENABLED": "false",
+                "LIFERADAR_API_KEY": "secret-key",
+                "LIFERADAR_MATRIX_ENABLED": "false",
             },
             clear=False,
         )
         self.env_patcher.start()
+        self.client = TestClient(app)
 
     def tearDown(self):
         self.env_patcher.stop()
@@ -52,6 +52,8 @@ class LifeRadarApiTests(unittest.TestCase):
             json={
                 "conversation_id": "11111111-1111-1111-1111-111111111111",
                 "content_text": "hi",
+                "user_approved": True,
+                "approval_note": "User approved this exact message.",
             },
         )
 
@@ -73,6 +75,7 @@ class LifeRadarApiTests(unittest.TestCase):
             "/search?q=matrix",
             "/docs",
             "/openapi.json",
+            "/matrix/verification/example",
         ]
 
         for endpoint in endpoints:
@@ -91,9 +94,7 @@ class LifeRadarApiTests(unittest.TestCase):
         self.assertEqual(schema_response.json()["info"]["title"], "LifeRadar API")
 
     def test_send_message_uses_matrix_binary_for_matrix_conversations_when_enabled(self):
-        with patch.dict(os.environ, {"LIFE_RADAR_BEEPER_ENABLED": "true"}, clear=False), patch(
-            "api.main.BEEPER_ENABLED", True
-        ), patch(
+        with patch.dict(os.environ, {"LIFERADAR_MATRIX_ENABLED": "true"}, clear=False), patch(
             "api.main.load_conversation_for_send",
             new=AsyncMock(return_value={"source": "matrix", "external_id": "!room:example.com"}),
         ), patch("api.main.run_matrix_send", new=AsyncMock(return_value="$event123")):
@@ -103,6 +104,8 @@ class LifeRadarApiTests(unittest.TestCase):
                 json={
                     "conversation_id": "11111111-1111-1111-1111-111111111111",
                     "content_text": "hello from test",
+                    "user_approved": True,
+                    "approval_note": "User approved this exact matrix send.",
                 },
             )
 
@@ -111,7 +114,7 @@ class LifeRadarApiTests(unittest.TestCase):
             response.json(), {"status": "sent", "message_id": "$event123"}
         )
 
-    def test_send_message_rejects_matrix_when_beeper_disabled(self):
+    def test_send_message_rejects_matrix_when_disabled(self):
         with patch(
             "api.main.load_conversation_for_send",
             new=AsyncMock(return_value={"source": "matrix", "external_id": "abc"}),
@@ -122,6 +125,8 @@ class LifeRadarApiTests(unittest.TestCase):
                 json={
                     "conversation_id": "11111111-1111-1111-1111-111111111111",
                     "content_text": "hello from test",
+                    "user_approved": True,
+                    "approval_note": "User approved this exact matrix send.",
                 },
             )
 
@@ -142,6 +147,8 @@ class LifeRadarApiTests(unittest.TestCase):
                 json={
                     "conversation_id": "11111111-1111-1111-1111-111111111111",
                     "content_text": "hello from test",
+                    "user_approved": True,
+                    "approval_note": "User approved this exact direct message.",
                 },
             )
 
@@ -160,11 +167,28 @@ class LifeRadarApiTests(unittest.TestCase):
                 json={
                     "conversation_id": "11111111-1111-1111-1111-111111111111",
                     "content_text": "hello from test",
+                    "user_approved": True,
+                    "approval_note": "User approved this exact send.",
                 },
             )
 
         self.assertEqual(response.status_code, 501)
         self.assertIn("not implemented", response.json()["detail"])
+
+    def test_send_message_rejects_without_explicit_user_approval(self):
+        response = self.client.post(
+            "/messages/send",
+            headers=self.auth_headers(),
+            json={
+                "conversation_id": "11111111-1111-1111-1111-111111111111",
+                "content_text": "hello from test",
+                "user_approved": False,
+                "approval_note": "No approval yet.",
+            },
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("Explicit user approval is required", response.json()["detail"])
 
     def test_connector_routes_proxy_to_chat_gateway(self):
         gateway_payload = [{"provider": "telegram", "enabled": True, "accounts": []}]
@@ -181,6 +205,113 @@ class LifeRadarApiTests(unittest.TestCase):
         self.assertIn("Telegram Login", response.text)
         self.assertIn("LifeRadar Connector", response.text)
         self.assertIn("Start Login", response.text)
+
+        matrix_response = self.client.get("/auth/matrix-device?api_key=secret-key")
+        self.assertEqual(matrix_response.status_code, 200)
+        self.assertIn("Matrix Device Verification", matrix_response.text)
+        self.assertIn("Sign In", matrix_response.text)
+        self.assertIn("Compare These Emojis", matrix_response.text)
+        self.assertIn("Choose a trusted device", matrix_response.text)
+        self.assertIn("Username", matrix_response.text)
+        self.assertIn("Email", matrix_response.text)
+
+    def test_matrix_session_status_reports_missing_session(self):
+        with patch("api.main._read_matrix_session_file", return_value=None):
+            response = self.client.get("/matrix/session", headers=self.auth_headers())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"has_session": False, "user_id": None, "device_id": None, "homeserver": None})
+
+    def test_matrix_login_proxies_to_password_login_helper(self):
+        payload = {
+            "status": "logged_in",
+            "user_id": "@anschmieg:beeper.com",
+            "device_id": "NEWDEVICE",
+            "homeserver": "https://matrix.beeper.com",
+            "verification_required": True,
+        }
+        with patch("api.main.perform_matrix_password_login", new=AsyncMock(return_value=payload)) as login_mock:
+            response = self.client.post(
+                "/matrix/login",
+                headers=self.auth_headers(),
+                json={
+                    "identifier": "anschmieg@example.com",
+                    "identifier_kind": "email",
+                    "password": "secret",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["device_id"], "NEWDEVICE")
+        login_mock.assert_awaited_once()
+
+    def test_matrix_devices_returns_available_verifier_list(self):
+        payload = [
+            {
+                "device_id": "ABC123",
+                "display_name": "Element Desktop",
+                "last_seen_ip": "127.0.0.1",
+                "last_seen_ts": "2026-04-19T12:00:00Z",
+                "is_current": False,
+                "is_verified": True,
+                "supports_encryption": True,
+            }
+        ]
+        with patch(
+            "api.main.ensure_valid_matrix_session",
+            new=AsyncMock(return_value={"user_id": "@anschmieg:beeper.com"}),
+        ), patch(
+            "api.main._matrix_list_devices",
+            new=AsyncMock(return_value=payload),
+        ) as devices_mock:
+            response = self.client.get("/matrix/devices", headers=self.auth_headers())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()[0]["device_id"], "ABC123")
+        devices_mock.assert_awaited_once()
+
+    def test_matrix_verification_routes_proxy_to_matrix_bridge(self):
+        payload = {
+            "attempt_id": "attempt-1",
+            "target_device_id": "NEWDEVICE",
+            "status": "waiting_for_accept",
+            "detail": "Accept the verification request in Beeper Desktop or Element.",
+            "flow_id": "flow-1",
+            "emojis": [],
+            "decimals": [],
+            "error": None,
+            "done": False,
+            "latest_event": "request_created",
+            "started_at": "2026-04-19T12:00:00+00:00",
+            "updated_at": "2026-04-19T12:00:01+00:00",
+            "logs": [],
+        }
+
+        with patch("api.main.ensure_valid_matrix_session", new=AsyncMock(return_value={"user_id": "@anschmieg:beeper.com"})), patch(
+            "api.main.call_matrix_bridge", new=AsyncMock(return_value=payload)
+        ) as bridge_mock:
+            start_response = self.client.post(
+                "/matrix/verification/start",
+                headers=self.auth_headers(),
+                json={"target_device_id": "NEWDEVICE"},
+            )
+            status_response = self.client.get(
+                "/matrix/verification/attempt-1",
+                headers=self.auth_headers(),
+            )
+            confirm_response = self.client.post(
+                "/matrix/verification/attempt-1/confirm",
+                headers=self.auth_headers(),
+                json={"decision": "yes"},
+            )
+
+        self.assertEqual(start_response.status_code, 200)
+        self.assertEqual(status_response.status_code, 200)
+        self.assertEqual(confirm_response.status_code, 200)
+        self.assertEqual(start_response.json()["attempt_id"], "attempt-1")
+        self.assertEqual(status_response.json()["target_device_id"], "NEWDEVICE")
+        self.assertEqual(confirm_response.json()["status"], "waiting_for_accept")
+        self.assertEqual(bridge_mock.await_count, 3)
 
     def test_get_tasks_without_status_uses_limit_only(self):
         connection = AsyncMock()

@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${LIFE_RADAR_DB_HOST:=life-radar-db}"
-: "${LIFE_RADAR_DB_PORT:=5432}"
-: "${LIFE_RADAR_DB_NAME:=life_radar}"
-: "${LIFE_RADAR_DB_USER:=life_radar}"
-: "${LIFE_RADAR_DB_PASSWORD:=change-me-in-env}"
-: "${LIFE_RADAR_MATRIX_CANDIDATE_ID:=matrix-nio-current}"
-: "${LIFE_RADAR_MATRIX_CANDIDATE_TYPE:=matrix-native}"
+: "${LIFERADAR_DB_HOST:=liferadar-db}"
+: "${LIFERADAR_DB_PORT:=5432}"
+: "${LIFERADAR_DB_NAME:=life_radar}"
+: "${LIFERADAR_DB_USER:=life_radar}"
+: "${LIFERADAR_DB_PASSWORD:=change-me-in-env}"
+: "${LIFERADAR_MATRIX_CANDIDATE_ID:=matrix-nio-current}"
+: "${LIFERADAR_MATRIX_CANDIDATE_TYPE:=matrix-native}"
 : "${MATRIX_MESSAGES_DB:=/app/workspace/workspace_data/messages.db}"
 : "${MATRIX_SESSION_PATH:=/app/identity/matrix-session.json}"
 : "${MATRIX_NIO_STORE:=/app/identity/nio-store}"
-: "${LIFE_RADAR_REPORT_DIR:=/app/workspace/life-radar/reports}"
+: "${LIFERADAR_REPORT_DIR:=/app/workspace/liferadar/reports}"
 
-export PGPASSWORD="$LIFE_RADAR_DB_PASSWORD"
-mkdir -p "$LIFE_RADAR_REPORT_DIR"
+export PGPASSWORD="$LIFERADAR_DB_PASSWORD"
+mkdir -p "$LIFERADAR_REPORT_DIR"
 
 observed_at="$(date -u +%FT%TZ)"
 status="fail"
@@ -65,10 +65,10 @@ if [ -n "$notes" ]; then
 fi
 
 psql \
-  --host "$LIFE_RADAR_DB_HOST" \
-  --port "$LIFE_RADAR_DB_PORT" \
-  --username "$LIFE_RADAR_DB_USER" \
-  --dbname "$LIFE_RADAR_DB_NAME" \
+  --host "$LIFERADAR_DB_HOST" \
+  --port "$LIFERADAR_DB_PORT" \
+  --username "$LIFERADAR_DB_USER" \
+  --dbname "$LIFERADAR_DB_NAME" \
   --set ON_ERROR_STOP=1 <<SQL
 INSERT INTO life_radar.runtime_probes (
   candidate_id,
@@ -84,8 +84,8 @@ INSERT INTO life_radar.runtime_probes (
   metadata,
   notes
 ) VALUES (
-  '${LIFE_RADAR_MATRIX_CANDIDATE_ID}',
-  '${LIFE_RADAR_MATRIX_CANDIDATE_TYPE}',
+  '${LIFERADAR_MATRIX_CANDIDATE_ID}',
+  '${LIFERADAR_MATRIX_CANDIDATE_TYPE}',
   '${status}',
   '${observed_at}',
   ${latency_ms},
@@ -118,8 +118,8 @@ INSERT INTO life_radar.messaging_candidates (
   metadata,
   updated_at
 ) VALUES (
-  '${LIFE_RADAR_MATRIX_CANDIDATE_ID}',
-  '${LIFE_RADAR_MATRIX_CANDIDATE_TYPE}',
+  '${LIFERADAR_MATRIX_CANDIDATE_ID}',
+  '${LIFERADAR_MATRIX_CANDIDATE_TYPE}',
   '${status}',
   '${observed_at}',
   ${freshness_seconds},
@@ -148,15 +148,15 @@ ON CONFLICT (candidate_id) DO UPDATE SET
   updated_at = NOW();
 SQL
 
-report_path="$LIFE_RADAR_REPORT_DIR/matrix-bakeoff-latest.md"
-mkdir -p "$LIFE_RADAR_REPORT_DIR"
-tmp_report="$(mktemp "$LIFE_RADAR_REPORT_DIR/.matrix-bakeoff-latest.XXXXXX")"
+report_path="$LIFERADAR_REPORT_DIR/matrix-bakeoff-latest.md"
+mkdir -p "$LIFERADAR_REPORT_DIR"
+tmp_report="$(mktemp "$LIFERADAR_REPORT_DIR/.matrix-bakeoff-latest.XXXXXX")"
 cat > "$tmp_report" <<REPORT
 # Matrix Candidate Report
 
 - observed_at: ${observed_at}
-- candidate_id: ${LIFE_RADAR_MATRIX_CANDIDATE_ID}
-- candidate_type: ${LIFE_RADAR_MATRIX_CANDIDATE_TYPE}
+- candidate_id: ${LIFERADAR_MATRIX_CANDIDATE_ID}
+- candidate_type: ${LIFERADAR_MATRIX_CANDIDATE_TYPE}
 - status: ${status}
 - notes: ${notes:-none}
 - total_events: ${total_events}

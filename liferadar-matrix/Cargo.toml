@@ -1,14 +1,17 @@
 [package]
-name = "life-radar-matrix-rust-probe"
+name = "liferadar-matrix"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+futures-util = "0.3"
 matrix-sdk = { version = "0.16.0", default-features = false, features = ["e2e-encryption", "sqlite", "rustls-tls"] }
+matrix-sdk-crypto = "0.16.0"
 reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["io-std", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
 tokio-postgres = "0.7"
+urlencoding = "2"

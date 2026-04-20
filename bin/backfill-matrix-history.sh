@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${LIFE_RADAR_DB_HOST:=life-radar-db}"
-: "${LIFE_RADAR_DB_PORT:=5432}"
-: "${LIFE_RADAR_DB_NAME:=life_radar}"
-: "${LIFE_RADAR_DB_USER:=life_radar}"
-: "${LIFE_RADAR_DB_PASSWORD:=change-me-in-env}"
+: "${LIFERADAR_DB_HOST:=liferadar-db}"
+: "${LIFERADAR_DB_PORT:=5432}"
+: "${LIFERADAR_DB_NAME:=life_radar}"
+: "${LIFERADAR_DB_USER:=life_radar}"
+: "${LIFERADAR_DB_PASSWORD:=change-me-in-env}"
 : "${MATRIX_MESSAGES_DB:=/app/workspace/workspace_data/messages.db}"
 : "${MATRIX_SESSION_PATH:=/app/identity/matrix-session.json}"
-: "${LIFE_RADAR_BACKFILL_SOURCE:=matrix_history_backfill}"
-: "${LIFE_RADAR_BACKFILL_FORCE:=0}"
+: "${LIFERADAR_BACKFILL_SOURCE:=matrix_history_backfill}"
+: "${LIFERADAR_BACKFILL_FORCE:=0}"
 
 if [[ ! -f "$MATRIX_MESSAGES_DB" ]]; then
   echo "matrix history backfill skipped: source DB missing at $MATRIX_MESSAGES_DB"
   exit 0
 fi
 
-export PGPASSWORD="$LIFE_RADAR_DB_PASSWORD"
+export PGPASSWORD="$LIFERADAR_DB_PASSWORD"
 SELF_USER_ID=""
 if [[ -f "$MATRIX_SESSION_PATH" ]]; then
   SELF_USER_ID="$(jq -r '.user_id // empty' "$MATRIX_SESSION_PATH")"
@@ -31,14 +31,14 @@ if [[ "$source_count" == "0" ]]; then
 fi
 
 state_json="$(psql \
-  --host "$LIFE_RADAR_DB_HOST" \
-  --port "$LIFE_RADAR_DB_PORT" \
-  --username "$LIFE_RADAR_DB_USER" \
-  --dbname "$LIFE_RADAR_DB_NAME" \
+  --host "$LIFERADAR_DB_HOST" \
+  --port "$LIFERADAR_DB_PORT" \
+  --username "$LIFERADAR_DB_USER" \
+  --dbname "$LIFERADAR_DB_NAME" \
   --tuples-only --no-align \
-  --command "select value::text from life_radar.runtime_metadata where key = '${LIFE_RADAR_BACKFILL_SOURCE}';" | tr -d '\n')"
+  --command "select value::text from life_radar.runtime_metadata where key = '${LIFERADAR_BACKFILL_SOURCE}';" | tr -d '\n')"
 
-if [[ "$LIFE_RADAR_BACKFILL_FORCE" != "1" && -n "$state_json" ]]; then
+if [[ "$LIFERADAR_BACKFILL_FORCE" != "1" && -n "$state_json" ]]; then
   previous_count="$(jq -r '.source_count // 0' <<<"$state_json")"
   previous_max_ts="$(jq -r '.source_max_ts // 0' <<<"$state_json")"
   if [[ "$previous_count" == "$source_count" && "$previous_max_ts" == "$source_max_ts" ]]; then
@@ -104,10 +104,10 @@ where room_id is not null and room_id <> '';
 SQL
 
 psql \
-  --host "$LIFE_RADAR_DB_HOST" \
-  --port "$LIFE_RADAR_DB_PORT" \
-  --username "$LIFE_RADAR_DB_USER" \
-  --dbname "$LIFE_RADAR_DB_NAME" \
+  --host "$LIFERADAR_DB_HOST" \
+  --port "$LIFERADAR_DB_PORT" \
+  --username "$LIFERADAR_DB_USER" \
+  --dbname "$LIFERADAR_DB_NAME" \
   --set ON_ERROR_STOP=1 <<SQL
 create temporary table stage_matrix_conversations (
   external_id text,
@@ -229,14 +229,14 @@ where c.id = agg.conversation_id;
 
 insert into life_radar.runtime_metadata (key, value)
 values (
-  '${LIFE_RADAR_BACKFILL_SOURCE}',
+  '${LIFERADAR_BACKFILL_SOURCE}',
   jsonb_build_object(
     'source_db', '${MATRIX_MESSAGES_DB}',
     'source_count', ${source_count},
     'source_max_ts', ${source_max_ts},
     'imported_at', now(),
     'self_user_id', nullif('${SELF_USER_ID}', ''),
-    'force', ${LIFE_RADAR_BACKFILL_FORCE}
+    'force', ${LIFERADAR_BACKFILL_FORCE}
   )
 )
 on conflict (key) do update
@@ -246,17 +246,17 @@ set
 SQL
 
 conversation_count="$(psql \
-  --host "$LIFE_RADAR_DB_HOST" \
-  --port "$LIFE_RADAR_DB_PORT" \
-  --username "$LIFE_RADAR_DB_USER" \
-  --dbname "$LIFE_RADAR_DB_NAME" \
+  --host "$LIFERADAR_DB_HOST" \
+  --port "$LIFERADAR_DB_PORT" \
+  --username "$LIFERADAR_DB_USER" \
+  --dbname "$LIFERADAR_DB_NAME" \
   --tuples-only --no-align \
   --command "select count(*) from life_radar.conversations where source = 'matrix';" | tr -d '\n')"
 message_count="$(psql \
-  --host "$LIFE_RADAR_DB_HOST" \
-  --port "$LIFE_RADAR_DB_PORT" \
-  --username "$LIFE_RADAR_DB_USER" \
-  --dbname "$LIFE_RADAR_DB_NAME" \
+  --host "$LIFERADAR_DB_HOST" \
+  --port "$LIFERADAR_DB_PORT" \
+  --username "$LIFERADAR_DB_USER" \
+  --dbname "$LIFERADAR_DB_NAME" \
   --tuples-only --no-align \
   --command "select count(*) from life_radar.message_events where source = 'matrix';" | tr -d '\n')"
 

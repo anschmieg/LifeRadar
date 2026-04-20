@@ -308,7 +308,7 @@ export class TelegramConnector extends BaseConnector {
   async #backfill(accountId) {
     const client = await this.#ensureAuthorizedClient();
     const me = await client.getMe();
-    const limitPerChat = Number.parseInt(process.env.LIFE_RADAR_CONNECTOR_BACKFILL_LIMIT_PER_CHAT || '2000', 10);
+    const limitPerChat = Number.parseInt(process.env.LIFERADAR_CONNECTOR_BACKFILL_LIMIT_PER_CHAT || '2000', 10);
     const dialogs = await client.getDialogs({ limit: 100 });
 
     for (const dialog of dialogs) {

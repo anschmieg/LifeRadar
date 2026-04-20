@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { env, runPsql, sqlLiteral } from '../lib/runtime.mjs';
 
-const kind = process.argv[2] || env('LIFE_RADAR_MEMORY_KIND', '');
-const limit = Number(process.argv[3] || env('LIFE_RADAR_MEMORY_LIMIT', '20'));
+const kind = process.argv[2] || env('LIFERADAR_MEMORY_KIND', '');
+const limit = Number(process.argv[3] || env('LIFERADAR_MEMORY_LIMIT', '20'));
 
 const where = [
   'active = true',

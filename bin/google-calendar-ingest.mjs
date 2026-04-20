@@ -20,7 +20,7 @@ const lookbackDays = Number.parseInt(env('GOOGLE_CALENDAR_LOOKBACK_DAYS', '30'),
 const lookaheadDays = Number.parseInt(env('GOOGLE_CALENDAR_LOOKAHEAD_DAYS', '60'), 10);
 
 if (!clientId || !clientSecret || !envRefreshToken) {
-  console.log('life-radar google calendar ingest skipped: credentials not configured');
+  console.log('liferadar google calendar ingest skipped: credentials not configured');
   process.exit(0);
 }
 
@@ -192,4 +192,4 @@ setRuntimeMetadata(runtimeKey, {
   time_max: timeMax,
 });
 
-console.log(`life-radar google calendar ingest complete: imported=${imported} skipped=${skipped}`);
+console.log(`liferadar google calendar ingest complete: imported=${imported} skipped=${skipped}`);

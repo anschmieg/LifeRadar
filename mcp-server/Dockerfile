@@ -21,7 +21,7 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 COPY --from=builder /app/mcp-server/ ./mcp-server/
 
 ENV PYTHONUNBUFFERED=1
-ENV LIFE_RADAR_API_URL=http://host.docker.internal:8000
+ENV LIFERADAR_API_URL=http://host.docker.internal:8000
 
 # Run via stdio — MCP servers use stdio transport
 CMD ["python", "mcp-server/server.py"]

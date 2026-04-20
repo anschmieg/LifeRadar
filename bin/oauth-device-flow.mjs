@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Matrix Device Code OAuth flow for Beeper/Matrix login
+ * Matrix Device Code OAuth flow for Matrix-compatible homeservers.
  *
  * Implements RFC 8628 Device Authorization Grant for Matrix SSO
  *
@@ -18,7 +18,7 @@ import { spawn } from 'child_process';
 
 const { values } = parseArgs({
   options: {
-    homeserver: { type: 'string', short: 'h', default: 'https://matrix.beeper.com' },
+    homeserver: { type: 'string', short: 'h' },
     output: { type: 'string', short: 'o' },
     user: { type: 'string', short: 'u' },
     poll: { type: 'string', short: 'p' },
@@ -33,7 +33,7 @@ Matrix Device Code OAuth Flow
 Usage: node oauth-device-flow.mjs [options]
 
 Options:
-  --homeserver <url>   Matrix homeserver (default: https://matrix.beeper.com)
+  --homeserver <url>   Matrix homeserver (or set LIFERADAR_MATRIX_HOMESERVER_URL)
   --user <user>        Username for token refresh testing
   --poll <code>        Poll existing device code instead of starting new flow
   --output <path>       Save tokens to file (default: ./matrix-session.json)
@@ -42,10 +42,19 @@ Options:
   process.exit(0);
 }
 
-const HOMESERVER = values.homeserver.replace(/\/$/, '');
+const HOMESERVER = (
+    process.env.LIFERADAR_MATRIX_HOMESERVER_URL
+    || values.homeserver
+    || ''
+).replace(/\/$/, '');
 const OUTPUT_PATH = values.output || './matrix-session.json';
 const USER_ID = values.user;
 const POLL_CODE = values.poll;
+
+if (!HOMESERVER) {
+  console.error('Missing Matrix homeserver. Set LIFERADAR_MATRIX_HOMESERVER_URL or pass --homeserver <url>.');
+  process.exit(1);
+}
 
 // Device code flow endpoints
 const DEVICE_CODE_URL = `${HOMESERVER}/_matrix/client/r0/device/new_device_code` ||
