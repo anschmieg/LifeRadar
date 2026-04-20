@@ -251,6 +251,12 @@ class MessageSendRequest(BaseModel):
     """Schema for sending a message via Matrix/Outlook."""
     conversation_id: UUID
     content_text: str
+    user_approved: bool = False
+    approval_note: str = Field(
+        ...,
+        min_length=1,
+        description="Short note confirming the user explicitly approved sending this exact message.",
+    )
 
 
 class MessageSendResponse(BaseModel):

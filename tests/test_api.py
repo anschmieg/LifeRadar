@@ -52,6 +52,8 @@ class LifeRadarApiTests(unittest.TestCase):
             json={
                 "conversation_id": "11111111-1111-1111-1111-111111111111",
                 "content_text": "hi",
+                "user_approved": True,
+                "approval_note": "User approved this exact message.",
             },
         )
 
@@ -102,6 +104,8 @@ class LifeRadarApiTests(unittest.TestCase):
                 json={
                     "conversation_id": "11111111-1111-1111-1111-111111111111",
                     "content_text": "hello from test",
+                    "user_approved": True,
+                    "approval_note": "User approved this exact matrix send.",
                 },
             )
 
@@ -121,6 +125,8 @@ class LifeRadarApiTests(unittest.TestCase):
                 json={
                     "conversation_id": "11111111-1111-1111-1111-111111111111",
                     "content_text": "hello from test",
+                    "user_approved": True,
+                    "approval_note": "User approved this exact matrix send.",
                 },
             )
 
@@ -141,6 +147,8 @@ class LifeRadarApiTests(unittest.TestCase):
                 json={
                     "conversation_id": "11111111-1111-1111-1111-111111111111",
                     "content_text": "hello from test",
+                    "user_approved": True,
+                    "approval_note": "User approved this exact direct message.",
                 },
             )
 
@@ -159,11 +167,28 @@ class LifeRadarApiTests(unittest.TestCase):
                 json={
                     "conversation_id": "11111111-1111-1111-1111-111111111111",
                     "content_text": "hello from test",
+                    "user_approved": True,
+                    "approval_note": "User approved this exact send.",
                 },
             )
 
         self.assertEqual(response.status_code, 501)
         self.assertIn("not implemented", response.json()["detail"])
+
+    def test_send_message_rejects_without_explicit_user_approval(self):
+        response = self.client.post(
+            "/messages/send",
+            headers=self.auth_headers(),
+            json={
+                "conversation_id": "11111111-1111-1111-1111-111111111111",
+                "content_text": "hello from test",
+                "user_approved": False,
+                "approval_note": "No approval yet.",
+            },
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("Explicit user approval is required", response.json()["detail"])
 
     def test_connector_routes_proxy_to_chat_gateway(self):
         gateway_payload = [{"provider": "telegram", "enabled": True, "accounts": []}]

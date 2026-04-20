@@ -22,7 +22,7 @@ services:
       MATRIX_RUST_SESSION_PATH: "${MATRIX_RUST_SESSION_PATH:-/app/identity/matrix-session.json}"
       MATRIX_RUST_STORE: "${MATRIX_RUST_STORE:-/app/identity/matrix-rust-sdk-store}"
     volumes:
-      - identity:/app/identity
+      - liferadar-identity:/app/identity
     expose:
       - "8000"
     extra_hosts:

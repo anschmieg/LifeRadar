@@ -338,14 +338,22 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="send-message",
-            description="Send a message in a direct chat conversation (Telegram, WhatsApp, or Matrix when explicitly re-enabled). Requires user approval. Returns a message_id.",
+            description="Send a message in a direct chat conversation (Telegram, WhatsApp, or Matrix when explicitly re-enabled). The client must first prompt the user for explicit approval of this exact send action. Returns a message_id.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "conversation_id": {"type": "string", "description": "UUID of the conversation"},
                     "content_text": {"type": "string", "description": "Message text to send"},
+                    "user_approved": {
+                        "type": "boolean",
+                        "description": "Must be true only after the client has explicitly asked the user to approve sending this exact message.",
+                    },
+                    "approval_note": {
+                        "type": "string",
+                        "description": "Short note capturing the user's explicit approval, for example 'User approved sending this exact message just now.'",
+                    },
                 },
-                "required": ["conversation_id", "content_text"],
+                "required": ["conversation_id", "content_text", "user_approved", "approval_note"],
             },
         ),
         Tool(
@@ -487,7 +495,23 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             else:
                 result = await call_api("calendar/events", params)
         case "send-message":
-            result = await call_api_post("messages/send", params)
+            if not params.get("user_approved"):
+                result = [{
+                    "error": (
+                        "Explicit user approval is required before sending a message. "
+                        "Prompt the user to approve this exact action, then retry with "
+                        "user_approved=true and a non-empty approval_note."
+                    )
+                }]
+            elif not str(params.get("approval_note", "")).strip():
+                result = [{
+                    "error": (
+                        "approval_note is required. Record a short note confirming that the "
+                        "user explicitly approved this exact send action, then retry."
+                    )
+                }]
+            else:
+                result = await call_api_post("messages/send", params)
         case "memories":
             result = await call_api("memories", params)
         case "probe_status":

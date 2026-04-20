@@ -1964,6 +1964,15 @@ async def send_message(request: MessageSendRequest, http_request: Request):
     Send a message via an active connector (user-approved only).
     """
     require_api_key(http_request)
+    if not request.user_approved:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Explicit user approval is required before sending a message. "
+                "Prompt the user for confirmation, then retry with user_approved=true "
+                "and an approval_note describing that approval."
+            ),
+        )
     conversation = await load_conversation_for_send(request.conversation_id)
 
     if conversation["source"] == "matrix":
