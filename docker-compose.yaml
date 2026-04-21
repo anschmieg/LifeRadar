@@ -165,32 +165,33 @@ services:
     restart: unless-stopped
 
 volumes:
-  # Default: ./data/* for local dev (relative to project dir)
-  # On Coolify: set DATA_DIR=/data/liferadar to use system paths
+  # Production default: /data/liferadar/*.
+  # Local dev should use docker-compose.local.yaml instead of this file.
+  # Never use the legacy /data/life-radar path.
   outlook-mcp-tokens:
     driver: local
     driver_opts:
       type: none
       o: bind
-      device: ${DATA_DIR:-./data/outlook-token-cache}
+      device: ${LIFERADAR_DATA_ROOT:-/data/liferadar}/outlook-token-cache
   connector-sessions:
     driver: local
     driver_opts:
       type: none
       o: bind
-      device: ${DATA_DIR:-./data/connectors}
+      device: ${LIFERADAR_DATA_ROOT:-/data/liferadar}/connectors
   liferadar-identity:
     driver: local
     driver_opts:
       type: none
       o: bind
-      device: ${DATA_DIR:-./data/identity}
+      device: ${LIFERADAR_DATA_ROOT:-/data/liferadar}/identity
   liferadar-workspace:
     driver: local
     driver_opts:
       type: none
       o: bind
-      device: ${DATA_DIR:-./data/workspace}
+      device: ${LIFERADAR_DATA_ROOT:-/data/liferadar}/workspace
 
 networks:
   coolify:
