@@ -57,7 +57,7 @@ async def _get_outlook_proc():
             return _outlook_proc
         try:
             import subprocess
-            cmd = ["npx", "-y", "@softeria/ms-365-mcp-server", "--preset", "mail"]
+            cmd = ["npx", "--no-install", "@softeria/ms-365-mcp-server", "--preset", "mail"]
             env = os.environ.copy()
             env["MS365_MCP_CLIENT_ID"] = MS365_CLIENT_ID
             env["MS365_MCP_CLIENT_SECRET"] = MS365_CLIENT_SECRET
