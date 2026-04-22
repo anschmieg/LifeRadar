@@ -90,6 +90,9 @@ services:
       - liferadar_preview_identity:/app/identity
     expose:
       - "8000"
+    networks:
+      - default
+      - coolify
     healthcheck:
       test:
         - CMD
@@ -138,3 +141,8 @@ volumes:
   liferadar_preview_beeper_home:
   liferadar_preview_identity:
   liferadar_preview_outlook_cache:
+
+networks:
+  coolify:
+    external: true
+    name: coolify
