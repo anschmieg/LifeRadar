@@ -2,14 +2,14 @@ FROM golang:1.25-bookworm AS builder
 
 WORKDIR /src
 
-COPY liferadar-api/go.mod liferadar-api/go.sum* ./
+COPY messaging-runtime/go.mod messaging-runtime/go.sum* ./
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
-COPY liferadar-api/ ./
+COPY messaging-runtime/ ./
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/liferadar-api .
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/liferadar-messaging-runtime ./cmd/liferadar-messaging-runtime
 
 FROM debian:bookworm-slim
 
@@ -21,13 +21,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 WORKDIR /app
 
-COPY --from=builder /out/liferadar-api /usr/local/bin/liferadar-api
+COPY --from=builder /out/liferadar-messaging-runtime /usr/local/bin/liferadar-messaging-runtime
 
-ENV LIFERADAR_DB_HOST=localhost
-ENV LIFERADAR_DB_PORT=5432
-ENV LIFERADAR_DB_NAME=life_radar
-ENV LIFERADAR_DB_USER=life_radar
+EXPOSE 8030
 
-EXPOSE 8000
-
-CMD ["liferadar-api"]
+CMD ["liferadar-messaging-runtime"]

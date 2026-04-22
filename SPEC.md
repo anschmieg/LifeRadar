@@ -3,9 +3,8 @@
 ## Overview
 
 LifeRadar is a personal intelligence and communications triage system. It continuously
-ingests messages from direct Telegram and WhatsApp connectors, legacy Matrix/Beeper data,
-Microsoft Graph (Outlook mail), and Google
-Calendar, stores them in PostgreSQL/pgvector, and exposes everything via an API to
+ingests messages from a Beeper Desktop sidecar runtime, plus Outlook and Google Calendar
+integrations, stores them in PostgreSQL/pgvector, and exposes everything via a Go API to
 power an AI agent (Hermes).
 
 **Migrated from:** `openclaw/overlay/life-radar/`
@@ -31,8 +30,8 @@ power an AI agent (Hermes).
 │  └───────────────────────────────────┘                       │
 │                                      │                       │
 │  ┌───────────────────────────────────▼───────────────────┐  │
-│  │  life-radar-api  (Phase 2)                           │  │
-│  │  FastAPI · GET/POST · OpenAPI 3.1                     │  │
+│  │  life-radar-api                                       │  │
+│  │  Go HTTP API · GET/POST · OpenAPI-like surface       │  │
 │  └────────────────────────┬───────────────────────────────┘  │
 └───────────────────────────┼─────────────────────────────────┘
                             │ HTTP
@@ -119,15 +118,15 @@ OpenClaw container is the compiled form of `matrix-rust-probe/` in this repo. Th
 
 ## Phase 2 — API Server
 
-**Status: DONE** (2026-04-08)
+**Status: DONE, later superseded by Go rewrite** (2026-04-22)
 
-**Goal:** Expose the DB via a FastAPI HTTP server consumed by Hermes.
+**Goal:** Expose the DB via an application API consumed by Hermes.
 
 ### Technology
 
-- **FastAPI** + **uvicorn** — native async, OpenAPI 3.1 auto-generation, Pydantic validation
-- **asyncpg** — async PostgreSQL driver with connection pooling
-- **pydantic** — request/response models
+- Initial implementation used **FastAPI** + **uvicorn**
+- Current implementation uses a **Go HTTP API**
+- PostgreSQL remains the system of record
 
 ### Endpoints
 
@@ -141,28 +140,28 @@ GET   /tasks                list planned_actions
 POST  /tasks                create task
 GET   /calendar/events      read Google Calendar (date range)
 POST  /calendar/events      upsert calendar event
-POST  /messages/send        send Matrix message (user-approved only; Outlook sends via MCP tools)
+POST  /messages/send        send Beeper-backed message (user-approved only; Outlook sends via MCP tools)
 GET   /search               semantic search over memories + conversations
 GET   /probe-status         probe health + last-run timestamps
 ```
 
 ### Completed
 
-- [x] Create `api/` directory with FastAPI application
+- [x] Create initial Python API, later replaced by the Go service
 - [x] Define Pydantic models for all request/response types
 - [x] Implement each endpoint with `asyncpg`
 - [x] Add OpenAPI route at `/openapi.json`
-- [x] Write `Dockerfile.api`
+- [x] Replace `Dockerfile.api` with Go build/runtime
 - [x] Add API key auth (static key for Hermes → API calls)
 - [x] Add Docker Compose service entry for `life-radar-api`
 - [x] Update `.env.example` with API server port variable
 - [x] Add Matrix bridge service for real Matrix sends
 - [x] Deploy to oracle via Coolify
 
-### Known Limitation
+### Current Note
 
-`POST /messages/send` returns 501 for non-Matrix sources. Outlook email sends are
-available through the MCP server's `outlook-send-mail` and `outlook-reply-mail-message` tools.
+`POST /messages/send` now routes only for Beeper-backed conversations. Outlook email sends are
+still available through the MCP server's `outlook-send-mail` and `outlook-reply-mail-message` tools.
 
 ---
 

@@ -172,35 +172,6 @@ if [[ "${send_status}" != "sent" ]] || [[ -z "${send_message_id}" ]]; then
   exit 1
 fi
 
-disabled_send_check="$(
-  compose_local run --rm --no-deps -T \
-    -e LIFERADAR_MATRIX_ENABLED=false \
-    liferadar-api python3 - <<'PY'
-import os, json
-from unittest.mock import AsyncMock, patch
-from fastapi.testclient import TestClient
-from api.main import app
-
-with patch("api.main.load_conversation_for_send", new=AsyncMock(return_value={"source": "matrix", "external_id": "!room:example.com"})):
-    client = TestClient(app)
-    response = client.post(
-        "/messages/send",
-        headers={"x-api-key": os.environ["LIFERADAR_API_KEY"]},
-        json={
-            "conversation_id": "11111111-1111-1111-1111-111111111111",
-            "content_text": "disabled-path-check",
-        },
-    )
-print(json.dumps({"status_code": response.status_code, "detail": response.json().get("detail")}))
-PY
-)"
-disabled_status="$(printf '%s' "${disabled_send_check}" | python_json "data['status_code']")"
-if [[ "${disabled_status}" != "501" ]]; then
-  echo "Disabled Matrix send did not return 501." >&2
-  printf '%s\n' "${disabled_send_check}" >&2
-  exit 1
-fi
-
 session_snapshot_before="$(
   python3 - <<PY
 import json, pathlib

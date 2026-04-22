@@ -338,7 +338,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="send-message",
-            description="Send a message in a direct chat conversation (Telegram, WhatsApp, or Matrix when explicitly re-enabled). The client must first prompt the user for explicit approval of this exact send action. Returns a message_id.",
+            description="Send a message in a Beeper-backed conversation. The client must first prompt the user for explicit approval of this exact send action. Returns a message_id.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -407,40 +407,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="connector-status",
-            description="List direct connector status for Telegram and WhatsApp, including active accounts and auth state.",
-            inputSchema={"type": "object", "properties": {}},
-        ),
-        Tool(
-            name="login-telegram",
-            description="Start or continue Telegram personal-account login. Returns attempt state; use auth_url or provide phone/code/password in follow-up calls.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "attempt_id": {"type": "string", "description": "Existing login attempt ID to continue"},
-                    "phone_number": {"type": "string", "description": "Phone number for the first Telegram login step"},
-                    "code": {"type": "string", "description": "Verification code received from Telegram"},
-                    "password": {"type": "string", "description": "Optional 2FA password if Telegram requests it"},
-                },
-            },
-        ),
-        Tool(
-            name="login-whatsapp",
-            description="Start or resume WhatsApp QR login. Returns an attempt state plus QR SVG/text when pairing is required.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "attempt_id": {"type": "string", "description": "Existing login attempt ID to poll"},
-                },
-            },
-        ),
-        Tool(
-            name="logout-telegram",
-            description="Log out the Telegram connector and clear persisted session state.",
-            inputSchema={"type": "object", "properties": {}},
-        ),
-        Tool(
-            name="logout-whatsapp",
-            description="Log out the WhatsApp connector and clear persisted session state.",
+            description="List messaging runtime status for the Beeper transport, including connected accounts and freshness metadata.",
             inputSchema={"type": "object", "properties": {}},
         ),
         Tool(
@@ -529,22 +496,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             result = await call_outlook_mcp("login", login_args)
         case "connector-status":
             result = await call_api("connectors")
-        case "login-telegram":
-            attempt_id = params.pop("attempt_id", None)
-            if attempt_id:
-                result = await call_api_post(f"connectors/telegram/login/{attempt_id}/submit", params)
-            else:
-                result = await call_api_post("connectors/telegram/login", {"force": False})
-        case "login-whatsapp":
-            attempt_id = params.pop("attempt_id", None)
-            if attempt_id:
-                result = await call_api(f"connectors/whatsapp/login/{attempt_id}")
-            else:
-                result = await call_api_post("connectors/whatsapp/login", {"force": False})
-        case "logout-telegram":
-            result = await call_api_post("connectors/telegram/logout", {})
-        case "logout-whatsapp":
-            result = await call_api_post("connectors/whatsapp/logout", {})
         case _:
             # Dynamic Outlook tool pass-through
             if name.startswith("outlook-"):

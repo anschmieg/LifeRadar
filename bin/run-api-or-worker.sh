@@ -5,16 +5,8 @@ MODE="${LIFERADAR_SERVICE:-worker}"
 echo "[liferadar] MODE=$MODE"
 
 if [[ "$MODE" == "api" ]]; then
-    echo "[liferadar] Starting API server (FastAPI + uvicorn)"
-    export PYTHONPATH="/opt/liferadar:${PYTHONPATH:-}"
-    cd /opt/liferadar
-    echo "[liferadar] Verifying Python packages..."
-    python3 -c "import fastapi, uvicorn, asyncpg, pydantic; print('  imports OK')"
-    echo "[liferadar] Starting uvicorn on :8000..."
-    exec python3 -m uvicorn api.main:app \
-        --host 0.0.0.0 \
-        --port 8000 \
-        --log-level info
+    echo "[liferadar] Starting Go API server"
+    exec /usr/local/bin/liferadar-api
 elif [[ "$MODE" == "mcp" ]]; then
     echo "[liferadar] Starting MCP SSE bridge server"
     export PYTHONPATH="/opt/liferadar:${PYTHONPATH:-}"
