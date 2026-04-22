@@ -15,7 +15,7 @@ services:
       LIFERADAR_DB_PASSWORD: "${LIFERADAR_DB_PASSWORD}"
       LIFERADAR_API_KEY: "${LIFERADAR_API_KEY}"
       LIFERADAR_MESSAGING_RUNTIME_URL: http://liferadar-messaging-runtime:8030
-      LIFERADAR_MATRIX_ENABLED: "${LIFERADAR_MATRIX_ENABLED:-true}"
+      LIFERADAR_MATRIX_ENABLED: "${LIFERADAR_MATRIX_ENABLED:-false}"
       LIFERADAR_MATRIX_HOMESERVER_URL: "${LIFERADAR_MATRIX_HOMESERVER_URL:-}"
       MATRIX_RUST_SESSION_PATH: "${MATRIX_RUST_SESSION_PATH:-/app/identity/matrix-session.json}"
       MATRIX_RUST_STORE: "${MATRIX_RUST_STORE:-/app/identity/matrix-rust-sdk-store}"
@@ -147,8 +147,7 @@ services:
   liferadar-worker:
     build:
       context: .
-      dockerfile: Dockerfile.matrix-services
-      target: worker-runtime
+      dockerfile: Dockerfile.worker
     container_name: liferadar-worker
     environment:
       LIFERADAR_DB_HOST: "${LIFERADAR_DB_HOST}"
@@ -156,26 +155,29 @@ services:
       LIFERADAR_DB_NAME: "${LIFERADAR_DB_NAME}"
       LIFERADAR_DB_USER: "${LIFERADAR_DB_USER}"
       LIFERADAR_DB_PASSWORD: "${LIFERADAR_DB_PASSWORD}"
-      MATRIX_SESSION_PATH: "${MATRIX_SESSION_PATH}"
-      MATRIX_RUST_SESSION_PATH: "${MATRIX_RUST_SESSION_PATH}"
-      MATRIX_RUST_STORE: "${MATRIX_RUST_STORE}"
-      MATRIX_ROOM_KEYS_PATH: "${MATRIX_ROOM_KEYS_PATH}"
-      MATRIX_ROOM_KEYS_PASSPHRASE_PATH: "${MATRIX_ROOM_KEYS_PASSPHRASE_PATH}"
-      MATRIX_RUST_KEY_IMPORT_MARKER: "${MATRIX_RUST_KEY_IMPORT_MARKER}"
-      LIFERADAR_MATRIX_RUST_CANDIDATE_ID: "${LIFERADAR_MATRIX_RUST_CANDIDATE_ID}"
-      LIFERADAR_MATRIX_RUST_CANDIDATE_TYPE: "${LIFERADAR_MATRIX_RUST_CANDIDATE_TYPE}"
-      LIFERADAR_MATRIX_RUST_TIMEOUT_SEC: "${LIFERADAR_MATRIX_RUST_TIMEOUT_SEC}"
-      LIFERADAR_MATRIX_RUST_RECOVER_HTTP_ON_FAILURE: "${LIFERADAR_MATRIX_RUST_RECOVER_HTTP_ON_FAILURE}"
-      LIFERADAR_MATRIX_ENABLED: "${LIFERADAR_MATRIX_ENABLED:-true}"
-      LIFERADAR_MATRIX_HOMESERVER_URL: "${LIFERADAR_MATRIX_HOMESERVER_URL}"
-      MSGRAPH_CLIENT_ID: "${MSGRAPH_CLIENT_ID}"
-      MSGRAPH_CLIENT_SECRET: "${MSGRAPH_CLIENT_SECRET}"
-      MSGRAPH_TENANT_ID: "${MSGRAPH_TENANT_ID}"
-      MSGRAPH_REFRESH_TOKEN: "${MSGRAPH_REFRESH_TOKEN}"
-      GOOGLE_CALENDAR_CLIENT_ID: "${GOOGLE_CALENDAR_CLIENT_ID}"
-      GOOGLE_CALENDAR_CLIENT_SECRET: "${GOOGLE_CALENDAR_CLIENT_SECRET}"
-      GOOGLE_CALENDAR_REFRESH_TOKEN: "${GOOGLE_CALENDAR_REFRESH_TOKEN}"
-      GOOGLE_CALENDAR_ID: "${GOOGLE_CALENDAR_ID}"
+      MATRIX_SESSION_PATH: "${MATRIX_SESSION_PATH:-/app/identity/matrix-session.json}"
+      MATRIX_RUST_SESSION_PATH: "${MATRIX_RUST_SESSION_PATH:-/app/identity/matrix-session.json}"
+      MATRIX_RUST_STORE: "${MATRIX_RUST_STORE:-/app/identity/matrix-rust-sdk-store}"
+      MATRIX_ROOM_KEYS_PATH: "${MATRIX_ROOM_KEYS_PATH:-/app/identity/matrix-e2e-keys.txt}"
+      MATRIX_ROOM_KEYS_PASSPHRASE_PATH: "${MATRIX_ROOM_KEYS_PASSPHRASE_PATH:-/app/identity/.e2e-keys-passphrase}"
+      MATRIX_RUST_KEY_IMPORT_MARKER: "${MATRIX_RUST_KEY_IMPORT_MARKER:-/app/identity/matrix-rust-sdk-store/room-key-import-marker.json}"
+      LIFERADAR_MATRIX_RUST_CANDIDATE_ID: "${LIFERADAR_MATRIX_RUST_CANDIDATE_ID:-}"
+      LIFERADAR_MATRIX_RUST_CANDIDATE_TYPE: "${LIFERADAR_MATRIX_RUST_CANDIDATE_TYPE:-}"
+      LIFERADAR_MATRIX_RUST_TIMEOUT_SEC: "${LIFERADAR_MATRIX_RUST_TIMEOUT_SEC:-20}"
+      LIFERADAR_MATRIX_RUST_RECOVER_HTTP_ON_FAILURE: "${LIFERADAR_MATRIX_RUST_RECOVER_HTTP_ON_FAILURE:-0}"
+      LIFERADAR_MATRIX_ENABLED: "${LIFERADAR_MATRIX_ENABLED:-false}"
+      LIFERADAR_MATRIX_HOMESERVER_URL: "${LIFERADAR_MATRIX_HOMESERVER_URL:-}"
+      LIFERADAR_MATRIX_LEGACY_IMPORT_ENABLED: "${LIFERADAR_MATRIX_LEGACY_IMPORT_ENABLED:-false}"
+      LIFERADAR_MSGRAPH_ENABLED: "${LIFERADAR_MSGRAPH_ENABLED:-true}"
+      LIFERADAR_GOOGLE_CALENDAR_ENABLED: "${LIFERADAR_GOOGLE_CALENDAR_ENABLED:-true}"
+      MSGRAPH_CLIENT_ID: "${MSGRAPH_CLIENT_ID:-}"
+      MSGRAPH_CLIENT_SECRET: "${MSGRAPH_CLIENT_SECRET:-}"
+      MSGRAPH_TENANT_ID: "${MSGRAPH_TENANT_ID:-common}"
+      MSGRAPH_REFRESH_TOKEN: "${MSGRAPH_REFRESH_TOKEN:-}"
+      GOOGLE_CALENDAR_CLIENT_ID: "${GOOGLE_CALENDAR_CLIENT_ID:-}"
+      GOOGLE_CALENDAR_CLIENT_SECRET: "${GOOGLE_CALENDAR_CLIENT_SECRET:-}"
+      GOOGLE_CALENDAR_REFRESH_TOKEN: "${GOOGLE_CALENDAR_REFRESH_TOKEN:-}"
+      GOOGLE_CALENDAR_ID: "${GOOGLE_CALENDAR_ID:-primary}"
     expose:
       - "8080"
     volumes:
@@ -186,79 +188,6 @@ services:
     networks:
       - coolify
     restart: unless-stopped
-
-  liferadar-chat-gateway:
-    profiles: ["legacy"]
-    build:
-      context: .
-      dockerfile: Dockerfile.chat-gateway
-    container_name: liferadar-chat-gateway
-    environment:
-      LIFERADAR_DB_HOST: "${LIFERADAR_DB_HOST}"
-      LIFERADAR_DB_PORT: "${LIFERADAR_DB_PORT}"
-      LIFERADAR_DB_NAME: "${LIFERADAR_DB_NAME}"
-      LIFERADAR_DB_USER: "${LIFERADAR_DB_USER}"
-      LIFERADAR_DB_PASSWORD: "${LIFERADAR_DB_PASSWORD}"
-      LIFERADAR_CONNECTOR_SESSION_DIR: /app/connectors
-      LIFERADAR_CHAT_GATEWAY_PORT: 8020
-      LIFERADAR_TELEGRAM_ENABLED: "${LIFERADAR_TELEGRAM_ENABLED}"
-      LIFERADAR_WHATSAPP_ENABLED: "${LIFERADAR_WHATSAPP_ENABLED}"
-      LIFERADAR_WHATSAPP_UNOFFICIAL_ALLOWED: "${LIFERADAR_WHATSAPP_UNOFFICIAL_ALLOWED}"
-      TELEGRAM_API_ID: "${TELEGRAM_API_ID}"
-      TELEGRAM_API_HASH: "${TELEGRAM_API_HASH}"
-      LIFERADAR_CONNECTOR_BACKFILL_LIMIT_PER_CHAT: "${LIFERADAR_CONNECTOR_BACKFILL_LIMIT_PER_CHAT}"
-    volumes:
-      - ${LIFERADAR_DATA_ROOT:-/data/liferadar}/connectors:/app/connectors
-    expose:
-      - "8020"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - coolify
-    restart: unless-stopped
-    healthcheck:
-      test:
-        - CMD
-        - node
-        - -e
-        - "fetch('http://127.0.0.1:8020/health').then(r=>{if(!r.ok) process.exit(1)}).catch(()=>process.exit(1))"
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 20s
-
-  liferadar-matrix-bridge:
-    profiles: ["legacy"]
-    build:
-      context: .
-      dockerfile: Dockerfile.matrix-services
-      target: matrix-bridge-runtime
-    container_name: liferadar-matrix-bridge
-    environment:
-      LIFERADAR_DB_HOST: "${LIFERADAR_DB_HOST}"
-      LIFERADAR_DB_PORT: "${LIFERADAR_DB_PORT}"
-      LIFERADAR_DB_NAME: "${LIFERADAR_DB_NAME}"
-      LIFERADAR_DB_USER: "${LIFERADAR_DB_USER}"
-      LIFERADAR_DB_PASSWORD: "${LIFERADAR_DB_PASSWORD}"
-    volumes:
-      - ${LIFERADAR_DATA_ROOT:-/data/liferadar}/identity:/app/identity
-    expose:
-      - "8010"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - coolify
-    restart: unless-stopped
-    healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health', timeout=5).read()"
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 20s
 
 networks:
   coolify:

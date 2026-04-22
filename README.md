@@ -38,7 +38,8 @@ docker compose logs -f liferadar-messaging-runtime
 - **life-radar-db** — pgvector:pg17 with connector state tables
 - **liferadar-api** — Go HTTP API over the rewritten messaging runtime
 - **liferadar-mcp** — MCP server that keeps the external tool surface stable
-- **liferadar-worker**, **liferadar-chat-gateway**, **liferadar-matrix-bridge** — legacy services kept only for archived Matrix/import scenarios
+- **liferadar-worker** — background probes for Outlook/calendar/memory extraction
+- **docker-compose.legacy.yaml** — optional Matrix-era services for archived recovery/import scenarios
 
 ## Onboarding
 
@@ -80,3 +81,5 @@ Utility scripts live in `bin/`. For the Nextcloud legacy migration compare statu
 ```
 
 For legacy Matrix recovery work, the old helper scripts remain in `bin/localdev/`, but they are no longer part of the primary architecture.
+
+If you need the archived Matrix stack, layer [docker-compose.legacy.yaml](/Users/adrian/Projects/LifeRadar/docker-compose.legacy.yaml:1) on top of the main compose file instead of using it in the default deployment path.
