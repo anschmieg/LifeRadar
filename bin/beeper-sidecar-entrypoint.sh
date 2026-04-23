@@ -17,6 +17,18 @@ if command -v fluxbox >/dev/null 2>&1; then
   fluxbox >/tmp/fluxbox.log 2>&1 &
 fi
 
+if command -v xsetroot >/dev/null 2>&1; then
+  xsetroot -solid '#263238' || true
+fi
+
+if command -v xclock >/dev/null 2>&1; then
+  xclock -digital -strftime 'LifeRadar Beeper sidecar - %H:%M:%S' -geometry 480x40+24+24 >/tmp/xclock.log 2>&1 &
+fi
+
+if command -v xterm >/dev/null 2>&1; then
+  xterm -geometry 120x32+24+88 -title "LifeRadar Beeper sidecar" -e "tail -F /tmp/beeper.log /tmp/x11vnc.log /tmp/novnc.log" >/tmp/xterm.log 2>&1 &
+fi
+
 if [[ "${BEEPER_VNC_ENABLED,,}" == "true" ]]; then
   x11vnc -display "$DISPLAY" -forever -shared -nopw -listen 0.0.0.0 -rfbport "${BEEPER_VNC_PORT:-5900}" >/tmp/x11vnc.log 2>&1 &
 fi
@@ -35,9 +47,9 @@ fi
 trap 'kill $XVFB_PID 2>/dev/null || true; exit 0' INT TERM EXIT
 
 while true; do
-  /opt/beeper/Beeper.AppImage --appimage-extract-and-run "${ARGS[@]}" &
+  /opt/beeper/Beeper.AppImage --appimage-extract-and-run "${ARGS[@]}" >>/tmp/beeper.log 2>&1 &
   BEEPER_PID=$!
   wait "$BEEPER_PID" || true
-  echo "[beeper-sidecar] Beeper exited; restarting in 10 seconds" >&2
+  echo "[beeper-sidecar] Beeper exited; restarting in 10 seconds" | tee -a /tmp/beeper.log >&2
   sleep 10
 done
