@@ -10,7 +10,8 @@ Ingests Beeper Desktop conversations into PostgreSQL/pgvector, then exposes them
 
 ```bash
 cp .env.example .env
-# Set BEEPER_APPIMAGE_URL if you do not want the default latest AppImage URL.
+# Set BEEPER_APPIMAGE_URL for the target server architecture.
+# The Coolify host currently uses the Linux ARM64 Beeper AppImage.
 # Start the rewritten stack.
 docker compose -f docker-compose.local.yaml up -d liferadar-db liferadar-beeper-sidecar liferadar-messaging-runtime liferadar-api
 ```
