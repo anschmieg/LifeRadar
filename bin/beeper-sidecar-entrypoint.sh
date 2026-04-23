@@ -13,6 +13,15 @@ export APPIMAGE_EXTRACT_AND_RUN=1
 Xvfb "$DISPLAY" -screen 0 1280x800x24 -ac +extension RANDR &
 XVFB_PID=$!
 
+for _ in $(seq 1 50); do
+  if xdpyinfo -display "$DISPLAY" >/tmp/xdpyinfo.log 2>&1; then
+    break
+  fi
+  sleep 0.2
+done
+
+touch /tmp/beeper.log /tmp/x11vnc.log /tmp/novnc.log /tmp/fluxbox.log /tmp/xterm.log /tmp/xclock.log
+
 if command -v fluxbox >/dev/null 2>&1; then
   fluxbox >/tmp/fluxbox.log 2>&1 &
 fi
@@ -26,7 +35,7 @@ if command -v xclock >/dev/null 2>&1; then
 fi
 
 if command -v xterm >/dev/null 2>&1; then
-  xterm -geometry 140x36+24+88 -title "LifeRadar Beeper sidecar logs" -e sh -lc "touch /tmp/beeper.log /tmp/x11vnc.log /tmp/novnc.log; tail -F /tmp/beeper.log /tmp/x11vnc.log /tmp/novnc.log" >/tmp/xterm.log 2>&1 &
+  xterm -geometry 140x36+24+88 -title "LifeRadar Beeper sidecar logs" -e tail -F /tmp/beeper.log /tmp/x11vnc.log /tmp/novnc.log /tmp/fluxbox.log /tmp/xclock.log >/tmp/xterm.log 2>&1 &
 fi
 
 if [[ "${BEEPER_VNC_ENABLED,,}" == "true" ]]; then
