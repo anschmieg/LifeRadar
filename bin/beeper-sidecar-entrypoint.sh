@@ -26,6 +26,7 @@ if [[ "${BEEPER_NOVNC_ENABLED,,}" == "true" ]]; then
 fi
 
 ARGS=()
+ARGS+=("--no-sandbox" "--disable-dev-shm-usage")
 if [[ "${BEEPER_DISABLE_GPU,,}" == "true" ]]; then
   ARGS+=("--disable-gpu")
 fi
