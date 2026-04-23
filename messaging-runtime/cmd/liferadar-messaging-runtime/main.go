@@ -242,6 +242,17 @@ func (a *app) handleSend(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) connectorStatus(ctx context.Context) (connectorStatus, error) {
+	status := connectorStatus{
+		Provider: "beeper",
+		Enabled:  false,
+		Metadata: map[string]any{},
+	}
+	if strings.TrimSpace(a.cfg.beeperToken) == "" {
+		status.Metadata["token_error"] = "BEEPER_ACCESS_TOKEN is not configured yet"
+		status.Metadata["beeper_base_url"] = a.cfg.beeperBaseURL
+		return status, nil
+	}
+
 	info, infoErr := a.beeperInfo(ctx)
 	introspection, introErr := a.introspectToken(ctx)
 	accounts, accountErr := a.beeperAccounts(ctx)
@@ -251,12 +262,8 @@ func (a *app) connectorStatus(ctx context.Context) (connectorStatus, error) {
 		}
 	}
 
-	status := connectorStatus{
-		Provider: "beeper",
-		Enabled:  infoErr == nil && introErr == nil,
-		Accounts: accounts,
-		Metadata: map[string]any{},
-	}
+	status.Enabled = infoErr == nil && introErr == nil
+	status.Accounts = accounts
 	if infoErr == nil {
 		status.Metadata["info"] = info
 	} else {
@@ -287,6 +294,10 @@ func (a *app) connectorStatus(ctx context.Context) (connectorStatus, error) {
 }
 
 func (a *app) runSyncLoop(ctx context.Context) {
+	if strings.TrimSpace(a.cfg.beeperToken) == "" {
+		a.logger.Printf("BEEPER_ACCESS_TOKEN is not configured; skipping sync loop")
+		return
+	}
 	a.syncOnce(context.Background())
 	ticker := time.NewTicker(a.cfg.syncInterval)
 	defer ticker.Stop()
@@ -394,6 +405,10 @@ func (a *app) syncChat(ctx context.Context, chat beeperChat) error {
 }
 
 func (a *app) runWebsocketLoop(ctx context.Context) {
+	if strings.TrimSpace(a.cfg.beeperToken) == "" {
+		a.logger.Printf("BEEPER_ACCESS_TOKEN is not configured; skipping websocket loop")
+		return
+	}
 	for {
 		select {
 		case <-ctx.Done():
