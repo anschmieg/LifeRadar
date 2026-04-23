@@ -22,6 +22,15 @@ done
 
 touch /tmp/beeper.log /tmp/x11vnc.log /tmp/novnc.log /tmp/fluxbox.log /tmp/xterm.log /tmp/xclock.log
 
+mkdir -p "$HOME/.fluxbox"
+if [[ ! -f "$HOME/.fluxbox/init" ]]; then
+  cat >"$HOME/.fluxbox/init" <<'EOF'
+session.screen0.rootCommand:
+session.screen0.toolbar.visible: true
+session.styleFile: /usr/share/fluxbox/styles/bloe
+EOF
+fi
+
 if command -v fluxbox >/dev/null 2>&1; then
   fluxbox >/tmp/fluxbox.log 2>&1 &
 fi
@@ -35,7 +44,7 @@ if command -v xclock >/dev/null 2>&1; then
 fi
 
 if command -v xterm >/dev/null 2>&1; then
-  xterm -geometry 140x36+24+88 -title "LifeRadar Beeper sidecar logs" -e tail -F /tmp/beeper.log /tmp/x11vnc.log /tmp/novnc.log /tmp/fluxbox.log /tmp/xclock.log >/tmp/xterm.log 2>&1 &
+  xterm -geometry 74x24+820+96 -title "LifeRadar Beeper sidecar logs" -e tail -F /tmp/beeper.log /tmp/x11vnc.log /tmp/novnc.log /tmp/fluxbox.log /tmp/xclock.log >/tmp/xterm.log 2>&1 &
 fi
 
 if [[ "${BEEPER_VNC_ENABLED,,}" == "true" ]]; then
