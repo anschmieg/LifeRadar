@@ -63,7 +63,7 @@ fi
 trap 'kill $XVFB_PID 2>/dev/null || true; exit 0' INT TERM EXIT
 
 while true; do
-  /opt/beeper/app/AppRun "${ARGS[@]}" >>/tmp/beeper.log 2>&1 &
+  APPDIR=/opt/beeper/app /opt/beeper/app/AppRun "${ARGS[@]}" >>/tmp/beeper.log 2>&1 &
   BEEPER_PID=$!
   wait "$BEEPER_PID" || true
   echo "[beeper-sidecar] Beeper exited; restarting in 10 seconds" | tee -a /tmp/beeper.log >&2
