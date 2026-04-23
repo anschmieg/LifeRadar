@@ -37,14 +37,14 @@ type config struct {
 }
 
 type app struct {
-	cfg             config
-	db              *pgxpool.Pool
-	httpClient      *http.Client
-	logger          *log.Logger
-	lastSyncAt      time.Time
-	lastEventAt     time.Time
-	lastError       string
-	mu              sync.RWMutex
+	cfg         config
+	db          *pgxpool.Pool
+	httpClient  *http.Client
+	logger      *log.Logger
+	lastSyncAt  time.Time
+	lastEventAt time.Time
+	lastError   string
+	mu          sync.RWMutex
 }
 
 type connectorAccount struct {
@@ -188,8 +188,8 @@ func (a *app) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	info, err := a.beeperInfo(r.Context())
 	status := map[string]any{
-		"status":        "ok",
-		"service":       "liferadar-messaging-runtime",
+		"status":           "ok",
+		"service":          "liferadar-messaging-runtime",
 		"beeper_reachable": err == nil,
 	}
 	if err != nil {
@@ -206,11 +206,7 @@ func (a *app) handleConnectors(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	status, err := a.connectorStatus(r.Context())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
+	status, _ := a.connectorStatus(r.Context())
 	a.respondJSON(w, http.StatusOK, []connectorStatus{status})
 }
 
@@ -263,9 +259,18 @@ func (a *app) connectorStatus(ctx context.Context) (connectorStatus, error) {
 	}
 	if infoErr == nil {
 		status.Metadata["info"] = info
+	} else {
+		status.Metadata["info_error"] = infoErr.Error()
 	}
 	if introErr == nil {
 		status.Metadata["token"] = introspection
+	} else if strings.TrimSpace(a.cfg.beeperToken) == "" {
+		status.Metadata["token_error"] = "BEEPER_ACCESS_TOKEN is not configured yet"
+	} else {
+		status.Metadata["token_error"] = introErr.Error()
+	}
+	if accountErr != nil {
+		status.Metadata["accounts_error"] = accountErr.Error()
 	}
 	a.mu.RLock()
 	if !a.lastSyncAt.IsZero() {
@@ -278,10 +283,6 @@ func (a *app) connectorStatus(ctx context.Context) (connectorStatus, error) {
 		status.Metadata["last_error"] = a.lastError
 	}
 	a.mu.RUnlock()
-
-	if infoErr != nil && introErr != nil {
-		return status, fmt.Errorf("beeper unavailable: %w", infoErr)
-	}
 	return status, nil
 }
 
@@ -569,15 +570,15 @@ type messagePage struct {
 }
 
 type beeperMessage struct {
-	ID         string
-	AccountID  string
-	ChatID     string
-	SenderID   string
-	SortKey    string
-	Timestamp  time.Time
-	Text       string
-	Inbound    bool
-	Metadata   map[string]any
+	ID        string
+	AccountID string
+	ChatID    string
+	SenderID  string
+	SortKey   string
+	Timestamp time.Time
+	Text      string
+	Inbound   bool
+	Metadata  map[string]any
 }
 
 func (a *app) listChats(ctx context.Context) ([]beeperChat, error) {
