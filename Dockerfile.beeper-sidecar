@@ -7,6 +7,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    desktop-file-utils \
     fluxbox \
     libasound2 \
     libatk-bridge2.0-0 \
@@ -48,6 +49,12 @@ RUN test -n "$BEEPER_APPIMAGE_URL"
 RUN mkdir -p /opt/beeper /data/beeper-home
 RUN curl -fsSL "$BEEPER_APPIMAGE_URL" -o /opt/beeper/Beeper.AppImage \
     && chmod +x /opt/beeper/Beeper.AppImage
+RUN cd /opt/beeper \
+    && ./Beeper.AppImage --appimage-extract >/tmp/beeper-appimage-extract.log 2>&1 \
+    && mv squashfs-root app \
+    && mkdir -p app/resources/app/node_modules/classic-level/prebuilds/linux-x64 \
+    && ln -sf ../linux-arm64/classic-level.armv8.node \
+        app/resources/app/node_modules/classic-level/prebuilds/linux-x64/classic-level.node
 
 COPY bin/beeper-sidecar-entrypoint.sh /usr/local/bin/beeper-sidecar-entrypoint.sh
 RUN chmod +x /usr/local/bin/beeper-sidecar-entrypoint.sh
