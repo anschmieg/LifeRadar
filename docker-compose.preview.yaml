@@ -37,6 +37,8 @@ services:
       - "23373"
       - "5900"
       - "6080"
+    ports:
+      - "127.0.0.1:32373:23373"
     networks:
       default:
         aliases:
@@ -53,7 +55,7 @@ services:
       LIFERADAR_DB_NAME: "${LIFERADAR_DB_NAME:-life_radar_preview}"
       LIFERADAR_DB_USER: "${LIFERADAR_DB_USER:-life_radar}"
       LIFERADAR_DB_PASSWORD: "${LIFERADAR_DB_PASSWORD:-preview-password}"
-      BEEPER_DESKTOP_BASE_URL: http://liferadar-beeper-sidecar:23373
+      BEEPER_DESKTOP_BASE_URL: http://host.docker.internal:32373
       BEEPER_ACCESS_TOKEN: "${BEEPER_ACCESS_TOKEN:-}"
       LIFERADAR_MESSAGING_RUNTIME_PORT: 8030
       LIFERADAR_BEEPER_SYNC_INTERVAL: "${LIFERADAR_BEEPER_SYNC_INTERVAL:-10m}"
@@ -71,6 +73,8 @@ services:
       default:
         aliases:
           - liferadar-messaging-runtime
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
   liferadar-api:
