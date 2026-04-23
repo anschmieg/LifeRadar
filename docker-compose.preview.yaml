@@ -47,7 +47,7 @@ services:
       - "traefik.http.routers.liferadar-rewrite-beeper-novnc.tls.certresolver=letsencrypt"
       - "traefik.http.routers.liferadar-rewrite-beeper-novnc.middlewares=liferadar-rewrite-auth"
       - "traefik.http.services.liferadar-rewrite-beeper-novnc.loadbalancer.server.port=6080"
-      - "traefik.http.middlewares.liferadar-rewrite-auth.basicauth.users=${LIFERADAR_PREVIEW_BASIC_AUTH}"
+      - "traefik.http.middlewares.liferadar-rewrite-auth.basicauth.users=liferadar:$$apr1$$E97nbaSI$$ZNTGijTt7KPzELqX27CUx1"
       - "traefik.docker.network=coolify"
     networks:
       default:
@@ -123,7 +123,7 @@ services:
       - "traefik.http.routers.liferadar-rewrite-preview.tls.certresolver=letsencrypt"
       - "traefik.http.routers.liferadar-rewrite-preview.middlewares=liferadar-rewrite-auth"
       - "traefik.http.services.liferadar-rewrite-preview.loadbalancer.server.port=8000"
-      - "traefik.http.middlewares.liferadar-rewrite-auth.basicauth.users=${LIFERADAR_PREVIEW_BASIC_AUTH}"
+      - "traefik.http.middlewares.liferadar-rewrite-auth.basicauth.users=liferadar:$$apr1$$E97nbaSI$$ZNTGijTt7KPzELqX27CUx1"
       - "traefik.docker.network=coolify"
     networks:
       - default
