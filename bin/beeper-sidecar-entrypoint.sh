@@ -4,7 +4,7 @@ set -euo pipefail
 : "${DISPLAY:=:99}"
 : "${BEEPER_VNC_ENABLED:=false}"
 : "${BEEPER_NOVNC_ENABLED:=false}"
-: "${BEEPER_DISABLE_GPU:=true}"
+: "${BEEPER_DISABLE_GPU:=false}"
 
 mkdir -p /tmp/.X11-unix /data/beeper-home
 export HOME=/data/beeper-home
