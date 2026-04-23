@@ -23,16 +23,15 @@ done
 touch /tmp/beeper.log /tmp/x11vnc.log /tmp/novnc.log /tmp/fluxbox.log /tmp/xterm.log /tmp/xclock.log
 
 mkdir -p "$HOME/.fluxbox"
-if [[ ! -f "$HOME/.fluxbox/init" ]]; then
-  cat >"$HOME/.fluxbox/init" <<'EOF'
+cat >"$HOME/.fluxbox/init" <<'EOF'
 session.screen0.rootCommand:
 session.screen0.toolbar.visible: true
 session.styleFile: /usr/share/fluxbox/styles/bloe
 EOF
-fi
 
 if command -v fluxbox >/dev/null 2>&1; then
   fluxbox >/tmp/fluxbox.log 2>&1 &
+  (sleep 2; pkill xmessage >/dev/null 2>&1 || true) &
 fi
 
 if command -v xsetroot >/dev/null 2>&1; then
