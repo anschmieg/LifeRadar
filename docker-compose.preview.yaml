@@ -90,6 +90,14 @@ services:
       - liferadar_preview_identity:/app/identity
     expose:
       - "8000"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.liferadar-rewrite-preview.rule=Host(`${LIFERADAR_PREVIEW_DOMAIN:-liferadar-test.nothing.pink}`)"
+      - "traefik.http.routers.liferadar-rewrite-preview.entrypoints=https"
+      - "traefik.http.routers.liferadar-rewrite-preview.tls=true"
+      - "traefik.http.routers.liferadar-rewrite-preview.tls.certresolver=letsencrypt"
+      - "traefik.http.services.liferadar-rewrite-preview.loadbalancer.server.port=8000"
+      - "traefik.docker.network=coolify"
     networks:
       - default
       - coolify
