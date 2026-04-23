@@ -39,10 +39,21 @@ services:
       - "6080"
     ports:
       - "127.0.0.1:32373:23373"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.liferadar-rewrite-beeper-novnc.rule=Host(`beeper-test.nothing.pink`)"
+      - "traefik.http.routers.liferadar-rewrite-beeper-novnc.entrypoints=https"
+      - "traefik.http.routers.liferadar-rewrite-beeper-novnc.tls=true"
+      - "traefik.http.routers.liferadar-rewrite-beeper-novnc.tls.certresolver=letsencrypt"
+      - "traefik.http.services.liferadar-rewrite-beeper-novnc.loadbalancer.server.port=6080"
+      - "traefik.docker.network=coolify"
     networks:
       default:
         aliases:
           - liferadar-beeper-sidecar
+      coolify:
+        aliases:
+          - liferadar-beeper-sidecar-novnc
     restart: unless-stopped
 
   liferadar-messaging-runtime:
