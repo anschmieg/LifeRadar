@@ -22,7 +22,8 @@ if [[ "${BEEPER_VNC_ENABLED,,}" == "true" ]]; then
 fi
 
 if [[ "${BEEPER_NOVNC_ENABLED,,}" == "true" ]]; then
-  websockify --web=/usr/share/novnc/ "${BEEPER_NOVNC_PORT:-6080}" "0.0.0.0:${BEEPER_VNC_PORT:-5900}" >/tmp/novnc.log 2>&1 &
+  sleep 1
+  websockify --web=/usr/share/novnc/ "${BEEPER_NOVNC_PORT:-6080}" "127.0.0.1:${BEEPER_VNC_PORT:-5900}" >/tmp/novnc.log 2>&1 &
 fi
 
 ARGS=()
