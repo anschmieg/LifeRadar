@@ -7,6 +7,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    dbus \
     dbus-x11 \
     desktop-file-utils \
     fluxbox \
@@ -56,7 +57,10 @@ RUN cd /opt/beeper \
     && mv squashfs-root app \
     && mkdir -p app/resources/app/node_modules/classic-level/prebuilds/linux-x64 \
     && ln -sf ../linux-arm64/classic-level.armv8.node \
-        app/resources/app/node_modules/classic-level/prebuilds/linux-x64/classic-level.node
+        app/resources/app/node_modules/classic-level/prebuilds/linux-x64/classic-level.node \
+    && perl -0pi -e 's/async checkForUpdates\(t=!1\)\{.*?\}autoInstallUpdate\(\)/async checkForUpdates(t=!1){logger.log("[Updates] disabled in LifeRadar sidecar");return}autoInstallUpdate()/s' \
+        app/resources/app/build/main/main-entry-*.mjs \
+    && grep -q "disabled in LifeRadar sidecar" app/resources/app/build/main/main-entry-*.mjs
 
 COPY bin/beeper-sidecar-entrypoint.sh /usr/local/bin/beeper-sidecar-entrypoint.sh
 RUN chmod +x /usr/local/bin/beeper-sidecar-entrypoint.sh
