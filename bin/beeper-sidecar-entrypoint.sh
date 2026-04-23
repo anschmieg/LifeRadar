@@ -26,7 +26,7 @@ if command -v xclock >/dev/null 2>&1; then
 fi
 
 if command -v xterm >/dev/null 2>&1; then
-  xterm -geometry 120x32+24+88 -title "LifeRadar Beeper sidecar" -e "tail -F /tmp/beeper.log /tmp/x11vnc.log /tmp/novnc.log" >/tmp/xterm.log 2>&1 &
+  xterm -geometry 140x36+24+88 -title "LifeRadar Beeper sidecar logs" -e sh -lc "touch /tmp/beeper.log /tmp/x11vnc.log /tmp/novnc.log; tail -F /tmp/beeper.log /tmp/x11vnc.log /tmp/novnc.log" >/tmp/xterm.log 2>&1 &
 fi
 
 if [[ "${BEEPER_VNC_ENABLED,,}" == "true" ]]; then
@@ -39,7 +39,7 @@ if [[ "${BEEPER_NOVNC_ENABLED,,}" == "true" ]]; then
 fi
 
 ARGS=()
-ARGS+=("--no-sandbox" "--disable-dev-shm-usage")
+ARGS+=("--no-sandbox" "--disable-dev-shm-usage" "--ozone-platform=x11")
 if [[ "${BEEPER_DISABLE_GPU,,}" == "true" ]]; then
   ARGS+=("--disable-gpu")
 fi
