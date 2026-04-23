@@ -8,6 +8,7 @@ set -euo pipefail
 
 mkdir -p /tmp/.X11-unix /data/beeper-home
 export HOME=/data/beeper-home
+export APPIMAGE_EXTRACT_AND_RUN=1
 
 Xvfb "$DISPLAY" -screen 0 1280x800x24 -ac +extension RANDR &
 XVFB_PID=$!
@@ -31,4 +32,4 @@ fi
 
 trap 'kill $XVFB_PID 2>/dev/null || true' EXIT
 
-exec /opt/beeper/Beeper.AppImage "${ARGS[@]}"
+exec /opt/beeper/Beeper.AppImage --appimage-extract-and-run "${ARGS[@]}"
