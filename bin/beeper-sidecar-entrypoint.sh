@@ -9,6 +9,16 @@ set -euo pipefail
 mkdir -p /tmp/.X11-unix /data/beeper-home
 export HOME=/data/beeper-home
 
+mkdir -p /run/dbus
+if command -v dbus-daemon >/dev/null 2>&1; then
+  dbus-daemon --system --fork >/tmp/dbus-system.log 2>&1 || true
+fi
+
+if command -v dbus-launch >/dev/null 2>&1; then
+  eval "$(dbus-launch --sh-syntax)"
+  export DBUS_SESSION_BUS_ADDRESS DBUS_SESSION_BUS_PID
+fi
+
 Xvfb "$DISPLAY" -screen 0 1280x800x24 -ac +extension RANDR &
 XVFB_PID=$!
 
