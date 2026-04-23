@@ -113,7 +113,9 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
-      - coolify
+      coolify:
+        aliases:
+          - liferadar-beeper-sidecar
     restart: unless-stopped
 
   liferadar-messaging-runtime:
@@ -139,7 +141,9 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
-      - coolify
+      coolify:
+        aliases:
+          - liferadar-messaging-runtime
     restart: unless-stopped
     depends_on:
       - liferadar-beeper-sidecar

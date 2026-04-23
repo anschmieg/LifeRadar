@@ -37,6 +37,10 @@ services:
       - "23373"
       - "5900"
       - "6080"
+    networks:
+      default:
+        aliases:
+          - liferadar-beeper-sidecar
     restart: unless-stopped
 
   liferadar-messaging-runtime:
@@ -63,6 +67,10 @@ services:
         condition: service_started
     expose:
       - "8030"
+    networks:
+      default:
+        aliases:
+          - liferadar-messaging-runtime
     restart: unless-stopped
 
   liferadar-api:
