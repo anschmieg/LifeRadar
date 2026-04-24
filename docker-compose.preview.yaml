@@ -27,8 +27,8 @@ services:
     environment:
       DISPLAY: ":99"
       BEEPER_DISABLE_GPU: "${BEEPER_DISABLE_GPU:-false}"
-      BEEPER_VNC_ENABLED: "${BEEPER_VNC_ENABLED:-false}"
-      BEEPER_NOVNC_ENABLED: "${BEEPER_NOVNC_ENABLED:-false}"
+      BEEPER_VNC_ENABLED: "true"
+      BEEPER_NOVNC_ENABLED: "true"
       BEEPER_VNC_PORT: 5900
       BEEPER_NOVNC_PORT: 6080
     volumes:
@@ -68,7 +68,7 @@ services:
       LIFERADAR_DB_NAME: "${LIFERADAR_DB_NAME:-life_radar_preview}"
       LIFERADAR_DB_USER: "${LIFERADAR_DB_USER:-life_radar}"
       LIFERADAR_DB_PASSWORD: "${LIFERADAR_DB_PASSWORD:-preview-password}"
-      BEEPER_DESKTOP_BASE_URL: http://host.docker.internal:32373
+      BEEPER_DESKTOP_BASE_URL: http://liferadar-beeper-sidecar:23373
       BEEPER_ACCESS_TOKEN: "${BEEPER_ACCESS_TOKEN:-}"
       LIFERADAR_MESSAGING_RUNTIME_PORT: 8030
       LIFERADAR_BEEPER_SYNC_INTERVAL: "${LIFERADAR_BEEPER_SYNC_INTERVAL:-10m}"
@@ -86,6 +86,9 @@ services:
       default:
         aliases:
           - liferadar-messaging-runtime
+      coolify:
+        aliases:
+          - liferadar-messaging-runtime-coolify
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped

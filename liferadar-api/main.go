@@ -824,6 +824,14 @@ func (a *app) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	metadata, _ := conversation["metadata"].(map[string]any)
 	if metadata != nil && metadata["transport"] == "beeper_desktop" {
+		// Hard send gate: only Beeper-backed Telegram Saved Messages may be sent.
+		// Require explicit evidence this is the Saved Messages chat, not just any Beeper chat.
+		source, _ := conversation["source"].(string)
+		title, _ := conversation["title"].(string)
+		if !(strings.EqualFold(source, "telegram") && strings.EqualFold(title, "Telegram Saved Messages")) {
+			a.respondError(w, http.StatusForbidden, "Sending is restricted: only the Telegram Saved Messages conversation (Beeper-backed) may receive outbound messages. All other conversations, including other Beeper-backed chats, are blocked.")
+			return
+		}
 		payload := map[string]any{
 			"external_id":     conversation["external_id"],
 			"content_text":    body.ContentText,

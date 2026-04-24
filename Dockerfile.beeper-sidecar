@@ -58,12 +58,36 @@ RUN cd /opt/beeper \
     && mkdir -p app/resources/app/node_modules/classic-level/prebuilds/linux-x64 \
     && ln -sf ../linux-arm64/classic-level.armv8.node \
         app/resources/app/node_modules/classic-level/prebuilds/linux-x64/classic-level.node \
+    # DISABLE BEEPER AUTO-UPDATER IN CONTAINER
+    # ---------------------------------------------------
+    # Beeper's Electron auto-updater throws a native SystemError in the containerized
+    # environment (missing syscall privileges, sandbox restrictions). This patch replaces
+    # the entire update check + auto-install function body with a no-op logger message.
+    # Without this patch, Beeper crashes within minutes of launch and enters a restart loop.
+    #
+    # WHAT THIS PATCH DOES:
+    #   Replaces: async checkForUpdates(t=!1){...; autoInstallUpdate()}
+    #   With:    async checkForUpdates(t=!1){logger.log("[Updates] disabled..."); return}; autoInstallUpdate()
+    #
+    # HOW TO TEST AFTER CHANGES:
+    #   1. Deploy and wait 5+ minutes - Beeper should stay alive (previous crash window was ~2-3 min)
+    #   2. Check: ps aux | grep Beeper.Appimage - should show a single stable PID
+    #   3. Check: tail /tmp/beeper.log in the sidecar - no "SystemError" or crash traces
+    #   4. The patch is verified at build time by the grep on the next line
+    #
+    # HOW TO UPDATE THE BEEPER APPIMAGE:
+    #   1. Update BEEPER_APPIMAGE_URL env var in Coolify to the new URL
+    #   2. Rebuild the sidecar image (Coolify auto-rebuilds on env var change)
+    #   3. The perl patch may need adjustment if Beeper refactors main-entry-*.mjs
+    #   4. Check the new main-entry file for: async checkForUpdates(t=!1){
+    # ---------------------------------------------------
     && perl -0pi -e 's/async checkForUpdates\(t=!1\)\{.*?\}autoInstallUpdate\(\)/async checkForUpdates(t=!1){logger.log("[Updates] disabled in LifeRadar sidecar");return}autoInstallUpdate()/s' \
         app/resources/app/build/main/main-entry-*.mjs \
     && grep -q "disabled in LifeRadar sidecar" app/resources/app/build/main/main-entry-*.mjs
 
 COPY bin/beeper-sidecar-entrypoint.sh /usr/local/bin/beeper-sidecar-entrypoint.sh
-RUN chmod +x /usr/local/bin/beeper-sidecar-entrypoint.sh
+COPY bin/beeper-sidecar-proxy.py /usr/local/bin/beeper-sidecar-proxy.py
+RUN chmod +x /usr/local/bin/beeper-sidecar-entrypoint.sh /usr/local/bin/beeper-sidecar-proxy.py
 
 VOLUME ["/data/beeper-home"]
 
