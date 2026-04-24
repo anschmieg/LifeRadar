@@ -19,7 +19,7 @@ if command -v dbus-launch >/dev/null 2>&1; then
   export DBUS_SESSION_BUS_ADDRESS DBUS_SESSION_BUS_PID
 fi
 
-APP_RUN="APPDIR=/opt/beeper/app /opt/beeper/app/AppRun"
+APP_RUN="/opt/beeper/app/AppRun"
 
 Xvfb "$DISPLAY" -screen 0 1280x800x24 -ac +extension RANDR &
 XVFB_PID=$!
@@ -78,7 +78,7 @@ fi
 trap 'kill $XVFB_PID 2>/dev/null || true; exit 0' INT TERM EXIT
 
 while true; do
-  $APP_RUN "${ARGS[@]}" >>/tmp/beeper.log 2>&1 &
+  APPDIR=/opt/beeper/app "$APP_RUN" "${ARGS[@]}" >>/tmp/beeper.log 2>&1 &
   BEEPER_PID=$!
   wait "$BEEPER_PID" || true
   echo "[beeper-sidecar] Beeper exited; restarting in 10 seconds" | tee -a /tmp/beeper.log >&2
