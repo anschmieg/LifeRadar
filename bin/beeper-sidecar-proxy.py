@@ -103,6 +103,25 @@ def _build_frame(opcode, payload, mask_key):
     return frame
 
 
+def _relay_frame(upstream_sock, opcode, payload, _source_sock):
+    try:
+        data = bytearray()
+        data.append(0x80 | opcode)
+        length = len(payload)
+        if length < 126:
+            data.append(length)
+        elif length < 65536:
+            data.append(126)
+            data.extend(struct.pack(">H", length))
+        else:
+            data.append(127)
+            data.extend(struct.pack(">Q", length))
+        data.extend(payload)
+        upstream_sock.sendall(bytes(data))
+    except (socket.error, OSError):
+        pass
+
+
 def write_masked_frame(sock, opcode, payload):
     try:
         sock.sendall(_build_frame(opcode, payload, mask_key=b"\x00\x00\x00\x00"))
@@ -178,12 +197,12 @@ def relay_client_to_upstream(client_sock, upstream_sock):
             if opcode is None:
                 break
             if opcode == OPCODE_CLOSE:
-                write_masked_frame(upstream_sock, OPCODE_CLOSE, payload)
+                _relay_frame(upstream_sock, opcode, payload, client_sock)
                 break
             if opcode in (OPCODE_TEXT, OPCODE_BINARY):
-                write_masked_frame(upstream_sock, opcode, payload)
+                _relay_frame(upstream_sock, opcode, payload, client_sock)
             elif opcode == OPCODE_PING:
-                write_masked_frame(upstream_sock, OPCODE_PING, payload)
+                _relay_frame(upstream_sock, OPCODE_PING, payload, client_sock)
             elif opcode == OPCODE_PONG:
                 pass
     except socket.timeout:
