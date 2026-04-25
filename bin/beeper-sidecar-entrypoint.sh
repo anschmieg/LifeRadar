@@ -75,10 +75,12 @@ if [[ "${BEEPER_DISABLE_GPU,,}" == "true" ]]; then
   ARGS+=("--disable-gpu")
 fi
 
+export APPDIR=/opt/beeper/app
+
 trap 'kill $XVFB_PID 2>/dev/null || true; exit 0' INT TERM EXIT
 
 while true; do
-  APPDIR=/opt/beeper/app "$APP_RUN" "${ARGS[@]}" >>/tmp/beeper.log 2>&1 &
+  "$APP_RUN" "${ARGS[@]}" >>/tmp/beeper.log 2>&1 &
   BEEPER_PID=$!
   wait "$BEEPER_PID" || true
   echo "[beeper-sidecar] Beeper exited; restarting in 10 seconds" | tee -a /tmp/beeper.log >&2

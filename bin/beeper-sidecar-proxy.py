@@ -31,24 +31,26 @@ def get_port():
 
 
 def find_beeper_port():
-    for port in range(30000, 60001):
-        s = None
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(UPSTREAM_CONNECT_TIMEOUT_SEC)
-            s.connect(("127.0.0.1", port))
-            s.sendall(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
-            resp = s.recv(20)
-            s.close()
-            if resp and b"HTTP" in resp:
-                return port
-        except Exception:
-            if s:
-                try:
-                    s.close()
-                except Exception:
-                    pass
-            continue
+    for _ in range(3):
+        for port in range(30000, 60001):
+            s = None
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(UPSTREAM_CONNECT_TIMEOUT_SEC)
+                s.connect(("127.0.0.1", port))
+                s.sendall(b"GET /v1/info HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+                resp = s.recv(20)
+                s.close()
+                if resp and b"HTTP" in resp:
+                    return port
+            except Exception:
+                if s:
+                    try:
+                        s.close()
+                    except Exception:
+                        pass
+                continue
+        time.sleep(0.5)
     return None
 
 
@@ -426,7 +428,7 @@ def handle(client_sock, client_addr):
         if e.errno not in (errno.ECONNRESET, errno.ECONNABORTED, errno.EPIPE, errno.EBADF):
             log(f"[proxy] error: {e}")
         invalidate_port()
-        # Retry discovery on next connection if upstream refused connection
+        log(f"[proxy] upstream refused; will rediscover on next connection")
     finally:
         if upstream:
             try:
