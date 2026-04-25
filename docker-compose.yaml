@@ -95,7 +95,7 @@ services:
       context: .
       dockerfile: Dockerfile.beeper-sidecar
       args:
-        BEEPER_APPIMAGE_URL: "${BEEPER_APPIMAGE_URL}"
+        BEEPER_APPIMAGE_URL: "${BEEPER_APPIMAGE_URL:-https://api.beeper.com/desktop/download/linux/arm64/stable/com.automattic.beeper.desktop}"
     container_name: liferadar-beeper-sidecar
     environment:
       DISPLAY: ":99"
