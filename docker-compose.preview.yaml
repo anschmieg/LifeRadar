@@ -22,8 +22,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.beeper-sidecar
-      args:
-        BEEPER_APPIMAGE_URL: "${BEEPER_APPIMAGE_URL}"
+      # BEEPER_APPIMAGE_URL intentionally omitted — Dockerfile has a sensible default
     environment:
       DISPLAY: ":99"
       BEEPER_DISABLE_GPU: "${BEEPER_DISABLE_GPU:-false}"
