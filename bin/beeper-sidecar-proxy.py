@@ -378,23 +378,20 @@ def handle(client_sock, client_addr):
                     try:
                         total = int(content_len)
                         already = len(body_already_read)
-                        if already >= total:
-                            # body was entirely in the header buffer; nothing more to do
-                            pass
-                        else:
-                            remaining = total - already
-                            additional = b""
-                            while len(additional) < remaining:
-                                chunk = client_sock.recv(min(remaining - len(additional), 65536))
-                                if not chunk:
-                                    break
-                                additional += chunk
-                            upstream.sendall(body_already_read + additional)
+                        remaining = max(total - already, 0)
+                        additional = b""
+                        while len(additional) < remaining:
+                            chunk = client_sock.recv(min(remaining - len(additional), 65536))
+                            if not chunk:
+                                break
+                            additional += chunk
+                        if additional:
+                            upstream.sendall(additional)
                     except ValueError:
                         pass
                 elif transfer_enc.lower() == "chunked":
-                    # Chunked: body_already_read may have partial chunk data; forward it
-                    # then read and forward the remainder of the chunked stream
+                    # Chunked: send any remaining chunked body data from the initial buffer,
+                    # then read and forward the rest of the chunked stream from the socket
                     if body_already_read:
                         try:
                             upstream.sendall(body_already_read)
