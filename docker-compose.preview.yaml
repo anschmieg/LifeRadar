@@ -50,12 +50,9 @@ services:
       - "traefik.http.middlewares.liferadar-rewrite-auth.basicauth.users=liferadar:{SHA}MHyDRnzncsANr+zJ2MlSosVXnxE="
       - "traefik.docker.network=coolify"
     networks:
-      default:
-        aliases:
-          - liferadar-beeper-sidecar
       coolify:
         aliases:
-          - liferadar-beeper-sidecar-novnc
+          - liferadar-beeper-sidecar
     restart: unless-stopped
 
   liferadar-messaging-runtime:
