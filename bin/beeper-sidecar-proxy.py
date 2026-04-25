@@ -103,18 +103,18 @@ def _build_frame(opcode, payload, mask_key):
     return frame
 
 
-def _relay_frame(upstream_sock, opcode, payload, _source_sock):
+def _relay_frame(upstream_sock, opcode, payload, second_byte, _source_sock):
     try:
         data = bytearray()
         data.append(0x80 | opcode)
         length = len(payload)
         if length < 126:
-            data.append(length)
+            data.append(second_byte & 0x80 | length)
         elif length < 65536:
-            data.append(126)
+            data.append(second_byte & 0x80 | 126)
             data.extend(struct.pack(">H", length))
         else:
-            data.append(127)
+            data.append(second_byte & 0x80 | 127)
             data.extend(struct.pack(">Q", length))
         data.extend(payload)
         upstream_sock.sendall(bytes(data))
@@ -139,32 +139,32 @@ def write_unmasked_frame(sock, opcode, payload):
 def read_frame(sock):
     first_byte = sock.recv(1)
     if not first_byte:
-        return None, b""
+        return None, b"", 0
     b = first_byte[0]
     opcode = b & 0xF
 
     second_byte = sock.recv(1)
     if not second_byte:
-        return None, b""
+        return None, b"", 0
     masked = (second_byte[0] & 0x80) != 0
     length = second_byte[0] & 0x7F
 
     if length == 126:
         raw = sock.recv(2)
         if len(raw) < 2:
-            return None, b""
+            return None, b"", 0
         length = struct.unpack(">H", raw)[0]
     elif length == 127:
         raw = sock.recv(8)
         if len(raw) < 8:
-            return None, b""
+            return None, b"", 0
         length = struct.unpack(">Q", raw)[0]
 
     payload = b""
     if masked:
         mask = sock.recv(4)
         if len(mask) < 4:
-            return None, b""
+            return None, b"", 0
         raw_payload = b""
         while len(raw_payload) < length:
             chunk = sock.recv(length - len(raw_payload))
@@ -172,7 +172,7 @@ def read_frame(sock):
                 break
             raw_payload += chunk
         if len(raw_payload) < length:
-            return None, b""
+            return None, b"", 0
         payload = bytes(b ^ mask[i % 4] for i, b in enumerate(raw_payload))
     else:
         payload = b""
@@ -182,9 +182,9 @@ def read_frame(sock):
                 break
             payload += chunk
         if len(payload) < length:
-            return None, b""
+            return None, b"", 0
 
-    return opcode, payload
+    return opcode, payload, second_byte[0]
 
 
 # ── WebSocket relay ───────────────────────────────────────────────────────────
@@ -193,16 +193,16 @@ def relay_client_to_upstream(client_sock, upstream_sock):
     client_sock.settimeout(60)
     try:
         while True:
-            opcode, payload = read_frame(client_sock)
+            opcode, payload, second_byte = read_frame(client_sock)
             if opcode is None:
                 break
             if opcode == OPCODE_CLOSE:
-                _relay_frame(upstream_sock, opcode, payload, client_sock)
+                _relay_frame(upstream_sock, opcode, payload, second_byte, client_sock)
                 break
             if opcode in (OPCODE_TEXT, OPCODE_BINARY):
-                _relay_frame(upstream_sock, opcode, payload, client_sock)
+                _relay_frame(upstream_sock, opcode, payload, second_byte, client_sock)
             elif opcode == OPCODE_PING:
-                _relay_frame(upstream_sock, OPCODE_PING, payload, client_sock)
+                _relay_frame(upstream_sock, OPCODE_PING, payload, second_byte, client_sock)
             elif opcode == OPCODE_PONG:
                 pass
     except socket.timeout:
@@ -216,7 +216,7 @@ def relay_upstream_to_client(upstream_sock, client_sock):
     upstream_sock.settimeout(60)
     try:
         while True:
-            opcode, payload = read_frame(upstream_sock)
+            opcode, payload, _second_byte = read_frame(upstream_sock)
             if opcode is None:
                 break
             if opcode == OPCODE_CLOSE:
