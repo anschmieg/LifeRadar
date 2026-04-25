@@ -1,6 +1,8 @@
 FROM debian:bookworm-slim
 
-ARG BEEPER_APPIMAGE_URL
+# Default URL for linux/arm64. AMD64 builds must override with
+# --build-arg BEEPER_APPIMAGE_URL=https://api.beeper.com/desktop/download/linux/amd64/stable/com.automattic.beeper.desktop
+ARG BEEPER_APPIMAGE_URL=https://api.beeper.com/desktop/download/linux/arm64/stable/com.automattic.beeper.desktop
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
@@ -47,18 +49,18 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
-RUN test -n "$BEEPER_APPIMAGE_URL"
-
 RUN mkdir -p /opt/beeper /data/beeper-home
 RUN curl -fsSL "$BEEPER_APPIMAGE_URL" -o /opt/beeper/Beeper.AppImage \
     && chmod +x /opt/beeper/Beeper.AppImage
+    # NOTE: classic-level symlink assumes linux-arm64. For amd64 use ../linux-x64/ instead.
 RUN cd /opt/beeper \
     && ./Beeper.AppImage --appimage-extract >/tmp/beeper-appimage-extract.log 2>&1 \
     && mv squashfs-root app \
     && mkdir -p app/resources/app/node_modules/classic-level/prebuilds/linux-x64 \
     && ln -sf ../linux-arm64/classic-level.armv8.node \
         app/resources/app/node_modules/classic-level/prebuilds/linux-x64/classic-level.node \
-    # DISABLE BEEPER AUTO-UPDATER IN CONTAINER
+    # NOTE: classic-level prebuild symlink assumes linux-arm64 host architecture.
+    # For amd64, replace ../linux-arm64/ with ../linux-x64/ in the ln command below.
     # ---------------------------------------------------
     # Beeper's Electron auto-updater throws a native SystemError in the containerized
     # environment (missing syscall privileges, sandbox restrictions). This patch replaces
