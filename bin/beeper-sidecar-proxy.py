@@ -426,6 +426,7 @@ def handle(client_sock, client_addr):
         if e.errno not in (errno.ECONNRESET, errno.ECONNABORTED, errno.EPIPE, errno.EBADF):
             log(f"[proxy] error: {e}")
         invalidate_port()
+        # Retry discovery on next connection if upstream refused connection
     finally:
         if upstream:
             try:
