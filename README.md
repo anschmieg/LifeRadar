@@ -2,9 +2,18 @@
 
 Personal intelligence and communications triage system.
 
-Ingests Beeper Desktop conversations into PostgreSQL/pgvector, then exposes them through the LifeRadar API and MCP surface for Hermes Agent. Legacy Matrix data can remain in the database for history and recovery, but it is no longer the active messaging runtime.
+Targets Beeper Desktop conversations as the primary live messaging source, then exposes them through the LifeRadar API and MCP surface for Hermes Agent. Legacy Matrix data can remain in the database for history and recovery, but it is no longer the active messaging runtime.
 
 **Status:** Messaging runtime and primary API have been rewritten around Beeper Desktop + Go. See [SPEC.md](/Users/adrian/Projects/LifeRadar/SPEC.md) for the broader roadmap.
+
+Important note as of 2026-04-25:
+
+- Beeper's official Desktop API docs explicitly advertise accounts, chats, messages, and
+  websocket events.
+- Our current sidecar/runtime tests have **not** yet proven full end-to-end ingestion in the
+  containerized environment.
+- Treat the Beeper Desktop sidecar path as the active direction, but still under runtime
+  validation rather than fully settled production truth.
 
 ## Local Beeper Runtime
 
@@ -22,6 +31,14 @@ In production, MCP is exposed at `https://liferadar.nothing.pink/mcp`; do not pu
 separate MCP subdomain.
 
 The local Beeper runtime is defined in [docker-compose.local.yaml](/Users/adrian/Projects/LifeRadar/docker-compose.local.yaml:1). It keeps persistent Beeper state under `./data/beeper-home`, runs Beeper Desktop under `Xvfb`, and exposes noVNC only when you enable it in the environment.
+
+Desktop API expectations:
+
+- Accounts, chats, messages, and `/v1/ws` live events are part of Beeper's documented API
+  surface.
+- If the sidecar returns empty bodies or closes websocket sessions immediately, treat that as
+  a sidecar/runtime mismatch to debug, not as proof that the Beeper Desktop API is only a
+  control surface.
 
 ## General Dev Compose
 
@@ -51,11 +68,14 @@ docker compose logs -f liferadar-messaging-runtime
 5. Restart `liferadar-messaging-runtime`.
 6. Disable VNC/noVNC for steady-state operation once the token and profile volume are working.
 
-`GET /connectors` now reports Beeper-centric runtime health, token validity, connected accounts, last sync, and last live-event freshness. `POST /messages/send` only sends for conversations whose metadata marks them as `transport=beeper_desktop`.
+`GET /connectors` is intended to report Beeper-centric runtime health, token validity,
+connected accounts, last sync, and last live-event freshness once the sidecar/runtime path is
+working end to end. `POST /messages/send` only sends for conversations whose metadata marks
+them as `transport=beeper_desktop`.
 
 ## Rewrite Notes
 
-- Beeper Desktop is the single active messaging transport in v1.
+- Beeper Desktop is the single active messaging transport target in v1.
 - Telegram, WhatsApp, and Signal are modeled through Beeper account metadata, not through separate LifeRadar connectors.
 - Legacy Matrix or direct connector records can stay in the database for history, but LifeRadar no longer preserves their runtime quirks just for compatibility.
 - The old connector login pages are intentionally retired. Operator onboarding now happens inside Beeper Desktop.

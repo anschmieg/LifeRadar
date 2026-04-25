@@ -2,10 +2,20 @@
 
 ## Overview
 
-LifeRadar is a personal intelligence and communications triage system. It continuously
-ingests messages from a Beeper Desktop sidecar runtime, plus Outlook and Google Calendar
-integrations, stores them in PostgreSQL/pgvector, and exposes everything via a Go API to
-power an AI agent (Hermes).
+LifeRadar is a personal intelligence and communications triage system. It is being reshaped
+around a Beeper Desktop sidecar runtime, plus Outlook and Google Calendar integrations,
+stores everything in PostgreSQL/pgvector, and exposes it via a Go API to power an AI agent
+(Hermes).
+
+Important note as of 2026-04-25:
+
+- Beeper's official Desktop API documentation explicitly describes accounts, chats, messages,
+  and websocket live events.
+- The current containerized sidecar runtime has not yet fully proven those capabilities end to
+  end in our environment.
+- Therefore, this spec should treat Beeper Desktop ingestion as the intended architecture,
+  while still distinguishing between documented API capabilities and the sidecar/runtime
+  behavior we have actually validated.
 
 **Migrated from:** `openclaw/overlay/life-radar/`
 
@@ -162,6 +172,13 @@ GET   /probe-status         probe health + last-run timestamps
 
 `POST /messages/send` now routes only for Beeper-backed conversations. Outlook email sends are
 still available through the MCP server's `outlook-send-mail` and `outlook-reply-mail-message` tools.
+
+### Beeper Runtime Note
+
+The Go API and messaging runtime are now shaped around Beeper Desktop, but the sidecar should
+not be described as "proven ingestion infrastructure" until the full runtime chain has been
+validated against real accounts, chats, messages, and websocket event flow in the target
+environment.
 
 ---
 

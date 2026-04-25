@@ -1,5 +1,10 @@
 # LifeRadar OAuth + E2EE Strategy
 
+> Historical note as of 2026-04-25: this document describes the earlier Matrix/OAuth/E2EE
+> recovery strategy. LifeRadar's active messaging direction is now the Beeper Desktop sidecar +
+> Go runtime path. Keep this document as background/reference material rather than the current
+> messaging plan.
+
 ## Overview
 
 Two-phase approach:
