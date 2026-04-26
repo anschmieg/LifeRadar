@@ -1,0 +1,182 @@
+services:
+  liferadar-db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: "${LIFERADAR_DB_NAME:-life_radar_preview}"
+      POSTGRES_USER: "${LIFERADAR_DB_USER:-life_radar}"
+      POSTGRES_PASSWORD: "${LIFERADAR_DB_PASSWORD:-preview-password}"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${LIFERADAR_DB_USER:-life_radar} -d ${LIFERADAR_DB_NAME:-life_radar_preview}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - liferadar_preview_postgres:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  liferadar-beeper-sidecar:
+    build:
+      context: .
+      dockerfile: Dockerfile.beeper-sidecar
+      # BEEPER_APPIMAGE_URL intentionally omitted — Dockerfile has a sensible default
+    environment:
+      DISPLAY: ":99"
+      BEEPER_DISABLE_GPU: "${BEEPER_DISABLE_GPU:-false}"
+      BEEPER_VNC_ENABLED: "true"
+      BEEPER_NOVNC_ENABLED: "true"
+      BEEPER_VNC_PORT: 5900
+      BEEPER_NOVNC_PORT: 6080
+    volumes:
+      - liferadar_preview_beeper_home:/data/beeper-home
+    expose:
+      - "23373"
+      - "5900"
+      - "6080"
+    ports:
+      - "127.0.0.1:32373:23373"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.liferadar-rewrite-beeper-novnc.rule=Host(`beeper-test.nothing.pink`)"
+      - "traefik.http.routers.liferadar-rewrite-beeper-novnc.entrypoints=https"
+      - "traefik.http.routers.liferadar-rewrite-beeper-novnc.tls=true"
+      - "traefik.http.routers.liferadar-rewrite-beeper-novnc.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.liferadar-rewrite-beeper-novnc.middlewares=liferadar-rewrite-auth"
+      - "traefik.http.services.liferadar-rewrite-beeper-novnc.loadbalancer.server.port=6080"
+      - "traefik.http.middlewares.liferadar-rewrite-auth.basicauth.users=liferadar:{SHA}9ZGJGsN/1FmPUxC5BgmR3Wkko7Y="
+      - "traefik.docker.network=coolify"
+    networks:
+      coolify:
+        aliases:
+          - liferadar-beeper-sidecar
+    restart: unless-stopped
+
+  liferadar-messaging-runtime:
+    build:
+      context: .
+      dockerfile: Dockerfile.messaging-runtime
+    environment:
+      LIFERADAR_DB_HOST: liferadar-db
+      LIFERADAR_DB_PORT: 5432
+      LIFERADAR_DB_NAME: "${LIFERADAR_DB_NAME:-life_radar_preview}"
+      LIFERADAR_DB_USER: "${LIFERADAR_DB_USER:-life_radar}"
+      LIFERADAR_DB_PASSWORD: "${LIFERADAR_DB_PASSWORD:-preview-password}"
+      BEEPER_DESKTOP_BASE_URL: http://liferadar-beeper-sidecar:23373
+      BEEPER_ACCESS_TOKEN: "${BEEPER_ACCESS_TOKEN:-}"
+      LIFERADAR_MESSAGING_RUNTIME_PORT: 8030
+      LIFERADAR_BEEPER_SYNC_INTERVAL: "${LIFERADAR_BEEPER_SYNC_INTERVAL:-10m}"
+      LIFERADAR_BEEPER_BACKFILL_PAGE_LIMIT: "${LIFERADAR_BEEPER_BACKFILL_PAGE_LIMIT:-100}"
+      LIFERADAR_BEEPER_BACKFILL_CHAT_LIMIT: "${LIFERADAR_BEEPER_BACKFILL_CHAT_LIMIT:-100}"
+      LIFERADAR_BEEPER_BACKFILL_MESSAGE_LIMIT: "${LIFERADAR_BEEPER_BACKFILL_MESSAGE_LIMIT:-500}"
+    depends_on:
+      liferadar-db:
+        condition: service_healthy
+      liferadar-beeper-sidecar:
+        condition: service_started
+    expose:
+      - "8030"
+    networks:
+      default:
+        aliases:
+          - liferadar-messaging-runtime
+      coolify:
+        aliases:
+          - liferadar-messaging-runtime-coolify
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  liferadar-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    environment:
+      LIFERADAR_DB_HOST: liferadar-db
+      LIFERADAR_DB_PORT: 5432
+      LIFERADAR_DB_NAME: "${LIFERADAR_DB_NAME:-life_radar_preview}"
+      LIFERADAR_DB_USER: "${LIFERADAR_DB_USER:-life_radar}"
+      LIFERADAR_DB_PASSWORD: "${LIFERADAR_DB_PASSWORD:-preview-password}"
+      LIFERADAR_API_KEY: "${LIFERADAR_API_KEY:-preview-shared-secret}"
+      LIFERADAR_MESSAGING_RUNTIME_URL: http://liferadar-messaging-runtime:8030
+      LIFERADAR_MATRIX_ENABLED: "${LIFERADAR_MATRIX_ENABLED:-false}"
+      LIFERADAR_MATRIX_HOMESERVER_URL: "${LIFERADAR_MATRIX_HOMESERVER_URL:-}"
+      MATRIX_RUST_SESSION_PATH: /app/identity/matrix-session.json
+      MATRIX_RUST_STORE: /app/identity/matrix-rust-sdk-store
+    depends_on:
+      liferadar-db:
+        condition: service_healthy
+      liferadar-messaging-runtime:
+        condition: service_started
+    volumes:
+      - liferadar_preview_identity:/app/identity
+    expose:
+      - "8000"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.liferadar-rewrite-preview.rule=Host(`liferadar-test.nothing.pink`) || Host(`vwswgg0s48kggs0cwkkc0k8o.nothing.pink`)"
+      - "traefik.http.routers.liferadar-rewrite-preview.entrypoints=https"
+      - "traefik.http.routers.liferadar-rewrite-preview.tls=true"
+      - "traefik.http.routers.liferadar-rewrite-preview.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.liferadar-rewrite-preview.middlewares=liferadar-rewrite-auth"
+      - "traefik.http.services.liferadar-rewrite-preview.loadbalancer.server.port=8000"
+      - "traefik.http.middlewares.liferadar-rewrite-auth.basicauth.users=liferadar:{SHA}9ZGJGsN/1FmPUxC5BgmR3Wkko7Y="
+      - "traefik.docker.network=coolify"
+    networks:
+      - default
+      - coolify
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -fsS
+        - http://127.0.0.1:8000/health
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  liferadar-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp
+    environment:
+      LIFERADAR_API_URL: http://liferadar-api:8000
+      LIFERADAR_PUBLIC_API_URL: "${LIFERADAR_PUBLIC_API_URL:-}"
+      LIFERADAR_API_KEY: "${LIFERADAR_API_KEY:-preview-shared-secret}"
+      OUTLOOK_MCP_ENABLED: "${OUTLOOK_MCP_ENABLED:-false}"
+      MSGRAPH_CLIENT_ID: "${MSGRAPH_CLIENT_ID:-}"
+      MSGRAPH_CLIENT_SECRET: "${MSGRAPH_CLIENT_SECRET:-}"
+      MSGRAPH_TENANT_ID: "${MSGRAPH_TENANT_ID:-common}"
+    depends_on:
+      liferadar-api:
+        condition: service_healthy
+    volumes:
+      - liferadar_preview_outlook_cache:/app/outlook-token-cache
+    expose:
+      - "8090"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=5).read()"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  liferadar_preview_postgres:
+  liferadar_preview_beeper_home:
+  liferadar_preview_identity:
+  liferadar_preview_outlook_cache:
+
+networks:
+  coolify:
+    external: true
+    name: coolify

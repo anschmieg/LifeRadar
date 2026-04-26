@@ -1,39 +1,32 @@
-FROM python:3.12-slim-bookworm AS builder
+FROM --platform=$BUILDPLATFORM golang:1.25-bookworm AS builder
 
-WORKDIR /app
+ARG TARGETOS
+ARG TARGETARCH
 
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_DEFAULT_TIMEOUT=120 \
-    VIRTUAL_ENV=/opt/venv \
-    PATH=/opt/venv/bin:$PATH
+WORKDIR /src
 
-RUN python -m venv "$VIRTUAL_ENV"
+COPY liferadar-api/go.mod liferadar-api/go.sum* ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 
-COPY api/requirements.txt .
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --no-compile -r requirements.txt
+COPY liferadar-api/ ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -o /out/liferadar-api .
 
-COPY api/ ./api/
-
-FROM python:3.12-slim-bookworm
-
-WORKDIR /app
-
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    VIRTUAL_ENV=/opt/venv \
-    PATH=/opt/venv/bin:$PATH
+FROM debian:bookworm-slim
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
-    libsqlite3-0 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /opt/venv /opt/venv
-COPY --from=builder /app/api/ ./api/
+WORKDIR /app
 
-ENV PYTHONUNBUFFERED=1
+COPY --from=builder /out/liferadar-api /usr/local/bin/liferadar-api
+
 ENV LIFERADAR_DB_HOST=localhost
 ENV LIFERADAR_DB_PORT=5432
 ENV LIFERADAR_DB_NAME=life_radar
@@ -41,4 +34,4 @@ ENV LIFERADAR_DB_USER=life_radar
 
 EXPOSE 8000
 
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["liferadar-api"]
