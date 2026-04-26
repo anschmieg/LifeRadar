@@ -32,52 +32,45 @@ Relevant Beeper docs:
 - API reference: `https://developers.beeper.com/desktop-api-reference`
 - WebSocket events changelog (`v4.2.557`): `https://developers.beeper.com/desktop-api/changelog/version/v4-2-557-2026-02-13`
 
-## 2026-04-25: Sidecar Test Results
+## 2026-04-25: Integration Audit Findings
 
-Testing against the containerized sidecar on oracle VPS (Coolify deployment, branch `codex/go-api-beeper-rewrite`):
+**Context:** An audit of our branch code against the official Beeper Desktop API docs revealed concrete bugs that must be ruled out before concluding the sidecar is blocked by a product limitation.
 
-**Setup:**
-- Beeper Desktop v4.2.770 running in `liferadar-beeper-sidecar` container
-- Matrix SDK active: `sync_loop` visible in Beeper logs with `joined_rooms: 0`
-- Real Matrix token (`syt_Y...`) confirmed in `account.db` and set as `BEEPER_ACCESS_TOKEN`
-- WebSocket mask-bit fix deployed (proxy preserves client mask bit)
+### Bug 1: Missing `requestID` in WebSocket subscription
 
-**HTTP API results:**
-- `GET /v1/info`, `/v1/accounts`, `/v1/chats`, `/v1/version` → all return `200 OK` with `Content-Length: 0`
-- Token does not matter — same empty bodies with real token, placeholder token, or no token
-- This is NOT a token/auth issue — the API is returning empty bodies regardless
+The Beeper WebSocket API docs specify this subscription format:
+```json
+{"type": "subscriptions.set", "requestID": "r2", "chatIDs": ["..."]}
+```
 
-**WebSocket results:**
-- `GET /v1/ws` → `101 Switching Protocols` (endpoint exists)
-- After 101, Beeper closes immediately with `\x88\x00` (close frame, no status) before any subscription is processed
-- Tested: TEXT/BINARY opcode, masked/unmasked frames, subscription formats: `subscriptions.set`, `allChats`, `subscribe` → all produce the same immediate close
-- `[Updates] disabled in LifeRadar sidecar` appears in Beeper logs
+Our Go runtime was sending:
+```json
+{"type": "subscriptions.set", "chatIDs": ["*"]}
+```
 
-**Interpretation:**
-The containerized sidecar has a different behavior than a normal Beeper Desktop session. The Matrix SDK runs and syncs (visible in logs) but the local HTTP API returns empty bodies and the WebSocket endpoint closes without processing. This matches the pattern of a Beeper build variant with the local API surface intentionally restricted.
+**Missing `requestID` is a real protocol bug.** The `requestID` is required for the server to correlate subscription responses. Without it, the server may accept the connection but never send events, or close immediately. **This has been fixed** (`messaging-runtime/cmd/liferadar-messaging-runtime/main.go`).
 
-**Local Beeper Desktop comparison (2026-04-25):**
-- Local Beeper v4.2.770 on Mac: MCP tools return 6 connected accounts, real chats, real message history
-- Same token format from `account.db` does NOT work against local HTTP API — local Beeper uses MCP OAuth, not Matrix session token directly
-- This confirms the containerized sidecar and local Beeper Desktop use different auth mechanisms for the local API
+### Bug 2: The `[Updates] disabled` log is from our own Dockerfile patch
 
-**Root cause confirmed:**
-The `[Updates] disabled in LifeRadar sidecar` log is the definitive signal. This is a Beeper Desktop sidecar build configuration that intentionally restricts the local API surface in containerized/headless environments. This is NOT something the Go runtime or proxy code can work around — it requires either:
-1. A different Beeper Desktop build that enables the local API in sidecar mode
-2. Using the native Beeper Desktop session directly (not sidecar) for ingestion
-3. An alternative ingestion path (e.g., Matrix homeserver API directly instead of Beeper Desktop API)
+The message `Updates disabled in LifeRadar sidecar` is **added by our Dockerfile** (line 86) to prevent crash loops from Beeper's auto-updater. It is NOT a Beeper build restriction signal.
 
-**What works:**
+### What We Still Don't Know
+
+1. **Token type:** We use Matrix session tokens (`BEEPER_ACCESS_TOKEN`) but the Desktop API docs only specify `Authorization: Bearer <token>`. We don't know if Matrix tokens work as Bearer tokens for the Desktop API, or if the API requires a separate Desktop API token.
+
+2. **Native desktop comparison:** We haven't captured what the native desktop actually sends in its WebSocket subscription frames — the exact `requestID`, any additional fields, and the auth header format.
+
+3. **Root cause of empty HTTP bodies:** Still unresolved. Could be token type mismatch, could be build variant, could be something else.
+
+### What Works
+
 - WebSocket upgrade flow is correctly proxied (mask fix verified)
 - `BEEPER_DISABLE_GPU=false` is correctly set (GPU not disabled)
 - Dynamic port discovery works (proxy finds Beeper on `33107` etc.)
 - Go runtime connects and retries WebSocket every ~10 seconds
-- Database schema and Go API are healthy (`connector_accounts`, `conversations`, `message_events` tables exist)
+- Database schema and Go API are healthy
 - Local Beeper Desktop MCP integration works on developer machines
-
-**What is blocked:**
-- The containerized Beeper sidecar returns empty bodies for all HTTP API endpoints due to build configuration (`[Updates] disabled in LifeRadar sidecar`)
-- The local API surface is restricted in sidecar/headless mode — this is a Beeper build issue, not a code issue
+- **NEW: `requestID` added to subscription** (fix deployed)
 
 ## Why This Document Exists
 
@@ -185,7 +178,7 @@ Exit criteria:
 - conversation/message ingestion is reliable across restart and reconnect
 - operators no longer need legacy Telegram/WhatsApp login flows
 
-**Known blocker:** The containerized sidecar returns empty bodies for all HTTP API endpoints and closes WebSocket connections immediately. This is a Beeper Desktop build configuration issue (`[Updates] disabled in LifeRadar sidecar`) that restricts the local API in containerized/headless environments. Resolution requires either a Beeper Desktop build that enables the local API in sidecar mode, or using the Matrix homeserver API directly instead of the Beeper Desktop API.
+**Known blocker:** The containerized sidecar returns empty bodies for all HTTP API endpoints and closes WebSocket connections immediately. The `requestID` bug (now fixed) may resolve the WebSocket close issue. The HTTP body issue remains unresolved and may be token-type related (Matrix token vs Desktop API Bearer token) or environment-related. The `[Updates] disabled` log is from our own Dockerfile patch, not a Beeper product restriction signal. Next step: capture native desktop WebSocket frames to compare subscription format and auth headers.
 
 ## Phase 2: Finish the Go API Cutover
 

@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xh *)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(f'Total tools: {len\\(d[\\\\\"result\\\\\"][\\\\\"tools\\\\\"]\\)}'\\)\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('\\\\n'.join\\([t['name'] for t in d['result']['tools']]\\)\\)\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); convs=[c for c in d['result']['content'][0]['text'] if 'telegram' in c.get\\('source',''\\).lower\\(\\)]; print\\(json.dumps\\(convs, indent=2\\)\\)\")",
+      "Bash(python3 -c ' *)",
+      "Bash(python3 -c \"import json,sys; d=json.loads\\(sys.stdin.read\\(\\)\\); print\\(json.dumps\\(json.loads\\(d['result']['content'][0]['text']\\), indent=2\\)[:3000]\\)\")",
+      "Bash(go build *)",
+      "Bash(python3 -m py_compile /Users/adrian/Projects/LifeRadar/bin/beeper-sidecar-proxy.py)",
+      "Bash(docker compose *)",
+      "Bash(python3 -c \"import sys,json; [print\\(f\\\\\"{c['Service']}: {c['State']}\\\\\"\\) for c in \\(json.load\\(sys.stdin\\) if sys.stdin.read\\(\\) else []\\)]\")",
+      "Bash(docker exec *)",
+      "Bash(docker cp *)",
+      "Bash(curl -s --max-time 5 http://127.0.0.1:32373/v1/info)",
+      "Bash(docker restart *)",
+      "Bash(curl -s --max-time 10 -X POST \"http://127.0.0.1:32373/v1/chats/test/messages\" -H \"Content-Type: application/json\" -d '{\"text\":\"hello from outside\"}')",
+      "Bash(curl -s --max-time 5 \"http://127.0.0.1:32373/v1/info\")",
+      "Bash(curl -v --max-time 5 \"http://localhost:32373/v1/info\")",
+      "mcp__beeper__search_chats",
+      "mcp__beeper__get_accounts"
+    ]
+  }
+}

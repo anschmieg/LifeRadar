@@ -437,8 +437,9 @@ func (a *app) consumeWebsocket(ctx context.Context) error {
 	defer conn.Close()
 
 	if err := conn.WriteJSON(map[string]any{
-		"type":    "subscriptions.set",
-		"chatIDs": []string{"*"},
+		"type":     "subscriptions.set",
+		"requestID": "r1",
+		"chatIDs":  []string{"*"},
 	}); err != nil {
 		return err
 	}
