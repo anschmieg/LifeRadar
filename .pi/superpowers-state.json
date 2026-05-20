@@ -29,7 +29,26 @@
   "tdd": {
     "phase": "idle",
     "testFiles": [],
-    "sourceFiles": [],
+    "sourceFiles": [
+      "/tmp/inspect_db.py",
+      "/tmp/inspect_store.py",
+      "/tmp/inspect_whoami.py",
+      "/tmp/inspect_index.py",
+      "/tmp/inspect_crypto.py",
+      "/tmp/inspect_after_api.py",
+      "/tmp/find_auth_keys.py",
+      "/tmp/ws_test.js",
+      "/tmp/mcp_req.js",
+      "/tmp/mcp_multi.js",
+      "/tmp/ws_from_inside.js",
+      "/tmp/find_oauth_url.py",
+      "/tmp/find_api_keys.py",
+      "/tmp/oauth_probing.js",
+      "/tmp/api_beeper_probes.js",
+      "/tmp/localhost_flags.py",
+      "/tmp/search_oauth_urls.py",
+      "/tmp/search_oauth2.py"
+    ],
     "redVerificationPending": false
   },
   "debug": {

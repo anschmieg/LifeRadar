@@ -66,6 +66,12 @@ if [[ "${BEEPER_NOVNC_ENABLED,,}" == "true" ]]; then
   websockify --web=/usr/share/novnc/ "${BEEPER_NOVNC_PORT:-6080}" "127.0.0.1:${BEEPER_VNC_PORT:-5900}" >/tmp/novnc.log 2>&1 &
 fi
 
+# Fix node/npx so Beeper's MCP layer can find them (AppRun has /opt/beeper/app/bin early in PATH)
+if [[ ! -e /opt/beeper/app/npx ]] && command -v npx >/dev/null 2>&1; then
+  ln -sf /usr/bin/node /opt/beeper/app/node
+  ln -sf /usr/bin/npx /opt/beeper/app/npx
+fi
+
 # Start Beeper Desktop API proxy (real WebSocket-capable dynamic-port proxy)
 python3 /usr/local/bin/beeper-sidecar-proxy.py >/tmp/proxy.log 2>&1 &
 
