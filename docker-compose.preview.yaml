@@ -48,7 +48,7 @@ services:
       - "traefik.http.services.liferadar-rewrite-beeper-novnc.loadbalancer.server.port=6080"
       # Fixed preview credential for Coolify/Traefik. Do not interpolate this
       # through Coolify envs; Coolify escapes ${...} inside compose labels.
-      - "traefik.http.middlewares.liferadar-rewrite-auth.basicauth.users=liferadar:{SHA}9ZGJGsN/1FmPUxC5BgmR3Wkko7Y="
+      - "traefik.http.middlewares.liferadar-rewrite-auth.basicauth.users=liferadar:{SHA}9GblpmjNtufQy3wFvjAY8Wo0Sg0="
       - "traefik.docker.network=coolify"
     networks:
       coolify:
@@ -126,7 +126,7 @@ services:
       - "traefik.http.services.liferadar-rewrite-preview.loadbalancer.server.port=8000"
       # Fixed preview credential for Coolify/Traefik. Do not interpolate this
       # through Coolify envs; Coolify escapes ${...} inside compose labels.
-      - "traefik.http.middlewares.liferadar-rewrite-auth.basicauth.users=liferadar:{SHA}9ZGJGsN/1FmPUxC5BgmR3Wkko7Y="
+      - "traefik.http.middlewares.liferadar-rewrite-auth.basicauth.users=liferadar:{SHA}9GblpmjNtufQy3wFvjAY8Wo0Sg0="
       - "traefik.docker.network=coolify"
     networks:
       - default
