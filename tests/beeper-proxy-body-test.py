@@ -24,6 +24,18 @@ def make_http_request(method, path, body, content_length=None):
     return headers.encode("latin-1") + body
 
 
+def make_http_request_with_host(method, path, host, body):
+    """Build a raw HTTP/1.1 request bytes with an explicit Host value."""
+    headers = (
+        f"{method} {path} HTTP/1.1\r\n"
+        f"Host: {host}\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        f"Connection: close\r\n"
+        f"\r\n"
+    )
+    return headers.encode("latin-1") + body
+
+
 def make_chunked_request(method, path, body):
     """Build a chunked transfer encoding request bytes."""
     chunk = f"{len(body):x}\r\n".encode() + body + b"\r\n"
@@ -132,6 +144,14 @@ def parse_http_response(raw):
     return status_line, headers, body
 
 
+def find_free_port():
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
 def check_no_body_duplication(request_bytes, proxy_port, fake_upstream_port, name):
     """Verify upstream sees no duplicate body bytes."""
     fake = FakeUpstream(fake_upstream_port)
@@ -184,8 +204,8 @@ def main():
     proxy = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(proxy)
 
-    PROXY_PORT = 23373
-    FAKE_UPSTREAM_PORT = 23999
+    PROXY_PORT = find_free_port()
+    FAKE_UPSTREAM_PORT = find_free_port()
 
     # Find proxy's current upstream port
     proxy.LISTEN_HOST = "127.0.0.1"
@@ -197,6 +217,23 @@ def main():
     time.sleep(0.1)
 
     results = []
+
+    # Unit check: proxy must present the upstream as loopback to Beeper Desktop,
+    # even when the Docker client reaches the proxy by service DNS name.
+    original = make_http_request_with_host(
+        "GET", "/v1/info", "liferadar-beeper-sidecar:23373", b""
+    )
+    rewritten = proxy.rewrite_upstream_host(original, FAKE_UPSTREAM_PORT)
+    expected_host = f"Host: 127.0.0.1:{FAKE_UPSTREAM_PORT}\r\n".encode("latin-1")
+    if (
+        expected_host in rewritten
+        and b"Host: liferadar-beeper-sidecar:23373\r\n" not in rewritten
+    ):
+        print("PASS [host-rewrite] upstream Host normalized to loopback")
+        results.append(True)
+    else:
+        print(f"FAIL [host-rewrite] unexpected request bytes: {rewritten[:200]!r}")
+        results.append(False)
 
     # Test 1: headers-only first, body arrives later
     body1 = b"hello world"

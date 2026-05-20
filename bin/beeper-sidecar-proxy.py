@@ -262,6 +262,28 @@ def parse_headers(header_bytes):
     return method, path, headers, body_start
 
 
+def rewrite_upstream_host(header_bytes, upstream_port):
+    header_end = header_bytes.find(b"\r\n\r\n")
+    if header_end == -1:
+        return header_bytes
+
+    header_part = header_bytes[:header_end].decode("latin-1", errors="replace")
+    body_part = header_bytes[header_end:]
+    replacement = f"Host: 127.0.0.1:{upstream_port}"
+    lines = header_part.split("\r\n")
+    rewritten = []
+    replaced = False
+    for line in lines:
+        if line.lower().startswith("host:"):
+            rewritten.append(replacement)
+            replaced = True
+        else:
+            rewritten.append(line)
+    if not replaced and rewritten:
+        rewritten.insert(1, replacement)
+    return "\r\n".join(rewritten).encode("latin-1") + body_part
+
+
 def receive_full_body(sock, headers, max_body_size=16 * 1024 * 1024):
     content_length = headers.get("Content-Length")
     transfer_encoding = headers.get("Transfer-Encoding", "")
@@ -350,10 +372,11 @@ def handle(client_sock, client_addr):
             return
 
         body_already_read = header_bytes[body_start:]
+        upstream_header_bytes = rewrite_upstream_host(header_bytes, port)
 
         if is_websocket_upgrade(headers):
             # WebSocket: forward headers + any body, handle upgrade
-            upstream.sendall(header_bytes)
+            upstream.sendall(upstream_header_bytes)
             upstream.settimeout(15)
 
             upstream_resp = b""
@@ -386,7 +409,7 @@ def handle(client_sock, client_addr):
             # HTTP: forward complete request (headers + body) as one chunk
             # Beeper API requires request to arrive complete, not split into header/body packets
 
-            upstream.sendall(header_bytes)
+            upstream.sendall(upstream_header_bytes)
 
             # Send body bytes based on declared body, not on whether bytes arrived buffered
             if method in ("POST", "PUT", "PATCH"):
