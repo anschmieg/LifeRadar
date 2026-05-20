@@ -188,8 +188,13 @@ def main():
     FAKE_UPSTREAM_PORT = 23999
 
     # Find proxy's current upstream port
+    proxy.LISTEN_HOST = "127.0.0.1"
+    proxy.LISTEN_PORT = PROXY_PORT
     proxy.find_beeper_port = lambda: FAKE_UPSTREAM_PORT
     proxy._last_port = FAKE_UPSTREAM_PORT
+    proxy_thread = threading.Thread(target=proxy.main, daemon=True)
+    proxy_thread.start()
+    time.sleep(0.1)
 
     results = []
 

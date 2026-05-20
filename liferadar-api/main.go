@@ -24,15 +24,16 @@ import (
 )
 
 type config struct {
-	port                string
-	dbURL               string
-	apiKey              string
-	mcpURL              string
-	messagingRuntimeURL string
-	matrixBridgeURL     string
-	matrixHomeserverURL string
-	matrixSessionPath   string
-	matrixStorePath     string
+	port                      string
+	dbURL                     string
+	apiKey                    string
+	mcpURL                    string
+	messagingRuntimeURL       string
+	matrixBridgeURL           string
+	matrixHomeserverURL       string
+	matrixSessionPath         string
+	matrixStorePath           string
+	matrixLegacyImportEnabled bool
 }
 
 type app struct {
@@ -135,15 +136,16 @@ func main() {
 
 func loadConfig() config {
 	return config{
-		port:                env("LIFERADAR_API_PORT", "8000"),
-		dbURL:               databaseURL(),
-		apiKey:              strings.TrimSpace(os.Getenv("LIFERADAR_API_KEY")),
-		mcpURL:              env("LIFERADAR_MCP_URL", "http://liferadar-mcp:8090"),
-		messagingRuntimeURL: env("LIFERADAR_MESSAGING_RUNTIME_URL", "http://liferadar-messaging-runtime:8030"),
-		matrixBridgeURL:     env("LIFERADAR_MATRIX_BRIDGE_URL", "http://liferadar-matrix-bridge:8010"),
-		matrixHomeserverURL: strings.TrimRight(env("LIFERADAR_MATRIX_HOMESERVER_URL", "https://matrix.beeper.com"), "/"),
-		matrixSessionPath:   env("MATRIX_RUST_SESSION_PATH", "/app/identity/matrix-session.json"),
-		matrixStorePath:     env("MATRIX_RUST_STORE", "/app/identity/matrix-rust-sdk-store"),
+		port:                      env("LIFERADAR_API_PORT", "8000"),
+		dbURL:                     databaseURL(),
+		apiKey:                    strings.TrimSpace(os.Getenv("LIFERADAR_API_KEY")),
+		mcpURL:                    env("LIFERADAR_MCP_URL", "http://liferadar-mcp:8090"),
+		messagingRuntimeURL:       env("LIFERADAR_MESSAGING_RUNTIME_URL", "http://liferadar-messaging-runtime:8030"),
+		matrixBridgeURL:           env("LIFERADAR_MATRIX_BRIDGE_URL", "http://liferadar-matrix-bridge:8010"),
+		matrixHomeserverURL:       strings.TrimRight(env("LIFERADAR_MATRIX_HOMESERVER_URL", "https://matrix.beeper.com"), "/"),
+		matrixSessionPath:         env("MATRIX_RUST_SESSION_PATH", "/app/identity/matrix-session.json"),
+		matrixStorePath:           env("MATRIX_RUST_STORE", "/app/identity/matrix-rust-sdk-store"),
+		matrixLegacyImportEnabled: envBool("LIFERADAR_MATRIX_LEGACY_IMPORT_ENABLED", false),
 	}
 }
 
@@ -164,6 +166,14 @@ func env(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func envBool(name string, fallback bool) bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
+	if value == "" {
+		return fallback
+	}
+	return value == "1" || value == "true" || value == "yes" || value == "on"
 }
 
 func (a *app) routes() http.Handler {
@@ -907,11 +917,15 @@ func (a *app) handleProbeStatus(w http.ResponseWriter, r *http.Request) {
 				decrypt_failures, encrypted_non_text, running_processes,
 				COALESCE(metadata, '{}'::jsonb) AS metadata, notes
 			FROM life_radar.runtime_probes
+			WHERE ($1::boolean OR (
+				candidate_id NOT ILIKE '%matrix%'
+				AND candidate_type NOT ILIKE '%matrix%'
+			))
 			ORDER BY observed_at DESC
 			LIMIT 20
 		) t
 	`
-	a.respondQueryJSON(w, r.Context(), query)
+	a.respondQueryJSON(w, r.Context(), query, a.cfg.matrixLegacyImportEnabled)
 }
 
 func (a *app) handleProbeCandidates(w http.ResponseWriter, r *http.Request) {
@@ -931,10 +945,14 @@ func (a *app) handleProbeCandidates(w http.ResponseWriter, r *http.Request) {
 				latest_decrypt_failures, latest_encrypted_non_text, latest_running_processes,
 				latest_notes, COALESCE(metadata, '{}'::jsonb) AS metadata, updated_at
 			FROM life_radar.messaging_candidates
+			WHERE ($1::boolean OR (
+				candidate_id NOT ILIKE '%matrix%'
+				AND candidate_type NOT ILIKE '%matrix%'
+			))
 			ORDER BY last_probe_at DESC
 		) t
 	`
-	a.respondQueryJSON(w, r.Context(), query)
+	a.respondQueryJSON(w, r.Context(), query, a.cfg.matrixLegacyImportEnabled)
 }
 
 func (a *app) handleSearch(w http.ResponseWriter, r *http.Request) {

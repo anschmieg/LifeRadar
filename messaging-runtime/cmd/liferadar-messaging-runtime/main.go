@@ -37,14 +37,30 @@ type config struct {
 }
 
 type app struct {
-	cfg         config
-	db          *pgxpool.Pool
-	httpClient  *http.Client
-	logger      *log.Logger
-	lastSyncAt  time.Time
-	lastEventAt time.Time
-	lastError   string
-	mu          sync.RWMutex
+	cfg                     config
+	db                      *pgxpool.Pool
+	httpClient              *http.Client
+	logger                  *log.Logger
+	lastSyncAt              time.Time
+	lastEventAt             time.Time
+	lastWebsocketConnect    time.Time
+	lastWebsocketDisconnect time.Time
+	websocketConnected      bool
+	lastSyncStats           syncStats
+	lastError               string
+	mu                      sync.RWMutex
+}
+
+type syncStats struct {
+	AccountsCount  int            `json:"accounts_count"`
+	ChatsCount     int            `json:"chats_count"`
+	MessagesCount  int            `json:"messages_count"`
+	ChatTypeCounts map[string]int `json:"chat_type_counts"`
+}
+
+type collectionMeta struct {
+	HasMore    bool
+	NextCursor string
 }
 
 type connectorAccount struct {
@@ -245,25 +261,30 @@ func (a *app) connectorStatus(ctx context.Context) (connectorStatus, error) {
 	status := connectorStatus{
 		Provider: "beeper",
 		Enabled:  false,
-		Metadata: map[string]any{},
+		Metadata: map[string]any{
+			"beeper_base_url":  a.cfg.beeperBaseURL,
+			"token_configured": strings.TrimSpace(a.cfg.beeperToken) != "",
+			"token_kind":       "beeper_desktop_api_bearer",
+		},
 	}
 	if strings.TrimSpace(a.cfg.beeperToken) == "" {
 		status.Metadata["token_error"] = "BEEPER_ACCESS_TOKEN is not configured yet"
-		status.Metadata["beeper_base_url"] = a.cfg.beeperBaseURL
 		return status, nil
 	}
 
 	info, infoErr := a.beeperInfo(ctx)
 	introspection, introErr := a.introspectToken(ctx)
 	accounts, accountErr := a.beeperAccounts(ctx)
-	if accountErr == nil {
+	if accountErr == nil && a.db != nil {
 		if err := a.persistAccounts(ctx, accounts); err != nil {
 			a.logger.Printf("persist accounts: %v", err)
 		}
 	}
+	diagnostics, diagnosticErr := a.collectDiagnostics(ctx)
 
-	status.Enabled = infoErr == nil && introErr == nil
+	status.Enabled = infoErr == nil && accountErr == nil
 	status.Accounts = accounts
+	status.Metadata["accounts_count"] = len(accounts)
 	if infoErr == nil {
 		status.Metadata["info"] = info
 	} else {
@@ -274,17 +295,37 @@ func (a *app) connectorStatus(ctx context.Context) (connectorStatus, error) {
 	} else if strings.TrimSpace(a.cfg.beeperToken) == "" {
 		status.Metadata["token_error"] = "BEEPER_ACCESS_TOKEN is not configured yet"
 	} else {
-		status.Metadata["token_error"] = introErr.Error()
+		status.Metadata["token_introspection_error"] = introErr.Error()
 	}
 	if accountErr != nil {
 		status.Metadata["accounts_error"] = accountErr.Error()
+	}
+	if diagnosticErr == nil {
+		status.Metadata["chats_count"] = diagnostics.ChatsCount
+		status.Metadata["messages_count"] = diagnostics.MessagesCount
+		status.Metadata["chat_type_counts"] = diagnostics.ChatTypeCounts
+	} else {
+		status.Metadata["diagnostics_error"] = diagnosticErr.Error()
 	}
 	a.mu.RLock()
 	if !a.lastSyncAt.IsZero() {
 		status.Metadata["last_sync_at"] = a.lastSyncAt.UTC().Format(time.RFC3339)
 	}
+	if a.lastSyncStats.AccountsCount > 0 || a.lastSyncStats.ChatsCount > 0 || a.lastSyncStats.MessagesCount > 0 {
+		status.Metadata["last_sync_accounts_count"] = a.lastSyncStats.AccountsCount
+		status.Metadata["last_sync_chats_count"] = a.lastSyncStats.ChatsCount
+		status.Metadata["last_sync_messages_count"] = a.lastSyncStats.MessagesCount
+		status.Metadata["last_sync_chat_type_counts"] = a.lastSyncStats.ChatTypeCounts
+	}
 	if !a.lastEventAt.IsZero() {
 		status.Metadata["last_event_at"] = a.lastEventAt.UTC().Format(time.RFC3339)
+	}
+	status.Metadata["websocket_connected"] = a.websocketConnected
+	if !a.lastWebsocketConnect.IsZero() {
+		status.Metadata["last_websocket_connect_at"] = a.lastWebsocketConnect.UTC().Format(time.RFC3339)
+	}
+	if !a.lastWebsocketDisconnect.IsZero() {
+		status.Metadata["last_websocket_disconnect_at"] = a.lastWebsocketDisconnect.UTC().Format(time.RFC3339)
 	}
 	if a.lastError != "" {
 		status.Metadata["last_error"] = a.lastError
@@ -312,45 +353,56 @@ func (a *app) runSyncLoop(ctx context.Context) {
 }
 
 func (a *app) syncOnce(ctx context.Context) {
-	if err := a.sync(ctx); err != nil {
+	stats, err := a.sync(ctx)
+	if err != nil {
 		a.setError(err)
 		a.logger.Printf("sync failed: %v", err)
 		return
 	}
 	a.mu.Lock()
 	a.lastSyncAt = time.Now().UTC()
+	a.lastSyncStats = stats
 	a.lastError = ""
 	a.mu.Unlock()
 }
 
-func (a *app) sync(ctx context.Context) error {
+func (a *app) sync(ctx context.Context) (syncStats, error) {
 	accounts, err := a.beeperAccounts(ctx)
 	if err != nil {
-		return err
+		return syncStats{}, err
 	}
 	if err := a.persistAccounts(ctx, accounts); err != nil {
-		return err
+		return syncStats{}, err
 	}
 	chats, err := a.listChats(ctx)
 	if err != nil {
-		return err
+		return syncStats{}, err
+	}
+	stats := syncStats{
+		AccountsCount:  len(accounts),
+		ChatsCount:     len(chats),
+		ChatTypeCounts: map[string]int{},
 	}
 	for _, chat := range chats {
-		if err := a.syncChat(ctx, chat); err != nil {
+		stats.ChatTypeCounts[chat.Type]++
+		count, err := a.syncChat(ctx, chat)
+		if err != nil {
 			a.logger.Printf("sync chat %s: %v", chat.ID, err)
+			continue
 		}
+		stats.MessagesCount += count
 	}
-	return nil
+	return stats, nil
 }
 
-func (a *app) syncChat(ctx context.Context, chat beeperChat) error {
+func (a *app) syncChat(ctx context.Context, chat beeperChat) (int, error) {
 	conversationID, err := a.upsertConversation(ctx, chat)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	checkpoint, err := a.loadCheckpoint(ctx, chat.AccountID, "chat:"+chat.ID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var latest string
 	var cursor string
@@ -359,7 +411,7 @@ func (a *app) syncChat(ctx context.Context, chat beeperChat) error {
 	for {
 		page, err := a.listMessages(ctx, chat.ID, cursor)
 		if err != nil {
-			return err
+			return total, err
 		}
 		if len(page.Items) == 0 {
 			break
@@ -376,6 +428,12 @@ func (a *app) syncChat(ctx context.Context, chat beeperChat) error {
 			if checkpoint != "" && message.SortKey <= checkpoint {
 				stop = true
 				continue
+			}
+			if message.AccountID == "" {
+				message.AccountID = chat.AccountID
+			}
+			if message.ChatID == "" {
+				message.ChatID = chat.ID
 			}
 			if err := a.upsertMessage(ctx, conversationID, chat, message); err != nil {
 				a.logger.Printf("upsert message %s: %v", message.ID, err)
@@ -398,10 +456,10 @@ func (a *app) syncChat(ctx context.Context, chat beeperChat) error {
 			"updated_at":      time.Now().UTC().Format(time.RFC3339),
 		}
 		if err := a.saveCheckpoint(ctx, chat.AccountID, "chat:"+chat.ID, value); err != nil {
-			return err
+			return total, err
 		}
 	}
-	return nil
+	return total, nil
 }
 
 func (a *app) runWebsocketLoop(ctx context.Context) {
@@ -434,12 +492,22 @@ func (a *app) consumeWebsocket(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() {
+		conn.Close()
+		a.mu.Lock()
+		a.websocketConnected = false
+		a.lastWebsocketDisconnect = time.Now().UTC()
+		a.mu.Unlock()
+	}()
+	a.mu.Lock()
+	a.websocketConnected = true
+	a.lastWebsocketConnect = time.Now().UTC()
+	a.mu.Unlock()
 
 	if err := conn.WriteJSON(map[string]any{
-		"type":     "subscriptions.set",
+		"type":      "subscriptions.set",
 		"requestID": "r1",
-		"chatIDs":  []string{"*"},
+		"chatIDs":   []string{"*"},
 	}); err != nil {
 		return err
 	}
@@ -469,14 +537,14 @@ func (a *app) handleEvent(ctx context.Context, payload map[string]any) error {
 	}
 
 	switch {
-	case strings.Contains(eventType, "chat") && strings.Contains(eventType, "upsert"):
+	case strings.Contains(eventType, "chat") && (strings.Contains(eventType, "upsert") || strings.Contains(eventType, "updated")):
 		chat := parseChat(data)
 		if chat.ID == "" {
 			return nil
 		}
 		_, err := a.upsertConversation(ctx, chat)
 		return err
-	case strings.Contains(eventType, "message") && strings.Contains(eventType, "upsert"):
+	case strings.Contains(eventType, "message") && (strings.Contains(eventType, "upsert") || strings.Contains(eventType, "created") || strings.Contains(eventType, "updated")):
 		message := parseMessage(data)
 		chat := parseChat(data)
 		if chat.ID == "" {
@@ -532,19 +600,9 @@ func (a *app) introspectToken(ctx context.Context) (map[string]any, error) {
 }
 
 func (a *app) beeperAccounts(ctx context.Context) ([]connectorAccount, error) {
-	payload, err := a.beeperJSON(ctx, http.MethodGet, "/v1/accounts", nil, true)
+	items, _, err := a.beeperCollection(ctx, http.MethodGet, "/v1/accounts", nil, true)
 	if err != nil {
 		return nil, err
-	}
-	items := arrayValue(payload["items"])
-	if len(items) == 0 && len(payload) > 0 {
-		items = []any{payload}
-		if _, ok := payload["accountID"]; !ok {
-			items = arrayValue(any(payload))
-		}
-	}
-	if len(items) == 0 {
-		items = arrayValue(any(payload))
 	}
 	var out []connectorAccount
 	for _, raw := range items {
@@ -557,8 +615,8 @@ func (a *app) beeperAccounts(ctx context.Context) ([]connectorAccount, error) {
 			Provider:     "beeper",
 			AccountID:    asString(item["accountID"]),
 			DisplayLabel: firstNonEmpty(asString(mapValue(item["user"])["fullName"]), asString(mapValue(item["user"])["username"]), asString(mapValue(item["user"])["phoneNumber"]), asString(item["network"])),
-			AuthState:    "connected",
-			Enabled:      true,
+			AuthState:    firstNonEmpty(asString(item["status"]), "connected"),
+			Enabled:      !strings.EqualFold(asString(item["status"]), "disabled"),
 			LastSyncedAt: &now,
 			Metadata: map[string]any{
 				"network": asString(item["network"]),
@@ -574,6 +632,7 @@ type beeperChat struct {
 	ID        string
 	AccountID string
 	Network   string
+	Type      string
 	Title     string
 	LastEvent *time.Time
 	Metadata  map[string]any
@@ -605,11 +664,10 @@ func (a *app) listChats(ctx context.Context) ([]beeperChat, error) {
 		if cursor != "" {
 			path += "&cursor=" + url.QueryEscape(cursor) + "&direction=before"
 		}
-		payload, err := a.beeperJSON(ctx, http.MethodGet, path, nil, true)
+		items, meta, err := a.beeperCollection(ctx, http.MethodGet, path, nil, true)
 		if err != nil {
 			return nil, err
 		}
-		items := arrayValue(payload["items"])
 		if len(items) == 0 {
 			break
 		}
@@ -619,12 +677,10 @@ func (a *app) listChats(ctx context.Context) ([]beeperChat, error) {
 				break
 			}
 		}
-		hasMore, _ := payload["hasMore"].(bool)
-		nextCursor := asString(payload["nextCursor"])
-		if !hasMore || nextCursor == "" {
+		if !meta.HasMore || meta.NextCursor == "" {
 			break
 		}
-		cursor = nextCursor
+		cursor = meta.NextCursor
 	}
 	return chats, nil
 }
@@ -634,22 +690,109 @@ func (a *app) listMessages(ctx context.Context, chatID, cursor string) (messageP
 	if cursor != "" {
 		path += "&cursor=" + url.QueryEscape(cursor) + "&direction=before"
 	}
-	payload, err := a.beeperJSON(ctx, http.MethodGet, path, nil, true)
+	items, meta, err := a.beeperCollection(ctx, http.MethodGet, path, nil, true)
 	if err != nil {
 		return messagePage{}, err
 	}
-	items := arrayValue(payload["items"])
 	result := messagePage{
-		HasMore:    boolValue(payload["hasMore"]),
-		NextCursor: asString(payload["nextCursor"]),
+		HasMore:    meta.HasMore,
+		NextCursor: meta.NextCursor,
 	}
 	for _, raw := range items {
-		result.Items = append(result.Items, parseMessage(mapValue(raw)))
+		message := parseMessage(mapValue(raw))
+		if message.ChatID == "" {
+			message.ChatID = chatID
+		}
+		result.Items = append(result.Items, message)
 	}
 	return result, nil
 }
 
+func (a *app) collectDiagnostics(ctx context.Context) (syncStats, error) {
+	chats, err := a.listChats(ctx)
+	if err != nil {
+		return syncStats{}, err
+	}
+	stats := syncStats{
+		ChatsCount:     len(chats),
+		ChatTypeCounts: map[string]int{},
+	}
+	for _, chat := range chats {
+		stats.ChatTypeCounts[chat.Type]++
+		cursor := ""
+		for {
+			page, err := a.listMessages(ctx, chat.ID, cursor)
+			if err != nil {
+				return stats, err
+			}
+			stats.MessagesCount += len(page.Items)
+			if !page.HasMore || page.NextCursor == "" {
+				break
+			}
+			cursor = page.NextCursor
+		}
+	}
+	return stats, nil
+}
+
+func (a *app) beeperCollection(ctx context.Context, method, path string, body any, auth bool) ([]any, collectionMeta, error) {
+	data, err := a.beeperRaw(ctx, method, path, body, auth)
+	if err != nil {
+		return nil, collectionMeta{}, err
+	}
+	return normalizeBeeperCollection(data)
+}
+
+func normalizeBeeperCollection(data []byte) ([]any, collectionMeta, error) {
+	if len(data) == 0 {
+		return nil, collectionMeta{}, nil
+	}
+	var items []any
+	if err := json.Unmarshal(data, &items); err == nil {
+		return items, collectionMeta{}, nil
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, collectionMeta{}, err
+	}
+	meta := collectionMeta{
+		HasMore:    boolValue(payload["hasMore"]),
+		NextCursor: firstNonEmpty(asString(payload["nextCursor"]), asString(payload["cursor"])),
+	}
+	items = arrayValue(payload["items"])
+	if len(items) == 0 {
+		items = arrayValue(payload["data"])
+	}
+	if len(items) == 0 {
+		if _, ok := payload["id"]; ok {
+			items = []any{payload}
+		} else if _, ok := payload["accountID"]; ok {
+			items = []any{payload}
+		}
+	}
+	return items, meta, nil
+}
+
 func (a *app) beeperJSON(ctx context.Context, method, path string, body any, auth bool) (map[string]any, error) {
+	data, err := a.beeperRaw(ctx, method, path, body, auth)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return map[string]any{}, nil
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		var arr []any
+		if errArr := json.Unmarshal(data, &arr); errArr == nil {
+			return map[string]any{"items": arr}, nil
+		}
+		return nil, err
+	}
+	return payload, nil
+}
+
+func (a *app) beeperRaw(ctx context.Context, method, path string, body any, auth bool) ([]byte, error) {
 	var reader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -680,18 +823,7 @@ func (a *app) beeperJSON(ctx context.Context, method, path string, body any, aut
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("beeper api %s %s failed: %s", method, path, strings.TrimSpace(string(data)))
 	}
-	if len(data) == 0 {
-		return map[string]any{}, nil
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(data, &payload); err != nil {
-		var arr []any
-		if errArr := json.Unmarshal(data, &arr); errArr == nil {
-			return map[string]any{"items": arr}, nil
-		}
-		return nil, err
-	}
-	return payload, nil
+	return data, nil
 }
 
 func (a *app) persistAccounts(ctx context.Context, accounts []connectorAccount) error {
@@ -817,6 +949,7 @@ func parseChat(data map[string]any) beeperChat {
 		ID:        firstNonEmpty(asString(data["id"]), asString(data["chatID"])),
 		AccountID: asString(data["accountID"]),
 		Network:   firstNonEmpty(asString(data["network"]), asString(mapValue(data["account"])["network"])),
+		Type:      firstNonEmpty(asString(data["type"]), "unknown"),
 		Title:     firstNonEmpty(asString(data["title"]), asString(data["name"]), asString(mapValue(data["user"])["fullName"])),
 		LastEvent: lastEvent,
 		Metadata: map[string]any{
@@ -824,6 +957,7 @@ func parseChat(data map[string]any) beeperChat {
 			"beeper_account_id": asString(data["accountID"]),
 			"beeper_chat_id":    firstNonEmpty(asString(data["id"]), asString(data["chatID"])),
 			"beeper_network":    firstNonEmpty(asString(data["network"]), asString(mapValue(data["account"])["network"])),
+			"beeper_chat_type":  firstNonEmpty(asString(data["type"]), "unknown"),
 			"beeper_chat":       data,
 		},
 	}
@@ -843,10 +977,13 @@ func parseMessage(data map[string]any) beeperMessage {
 	if boolVal, ok := data["fromMe"].(bool); ok {
 		inbound = !boolVal
 	}
+	if boolVal, ok := data["isSender"].(bool); ok {
+		inbound = !boolVal
+	}
 	return beeperMessage{
 		ID:        firstNonEmpty(asString(data["id"]), asString(data["messageID"])),
 		AccountID: asString(data["accountID"]),
-		ChatID:    firstNonEmpty(asString(data["chatID"]), asString(data["id"])),
+		ChatID:    asString(data["chatID"]),
 		SenderID:  asString(data["senderID"]),
 		SortKey:   firstNonEmpty(asString(data["sortKey"]), asString(data["id"])),
 		Timestamp: timestamp.UTC(),

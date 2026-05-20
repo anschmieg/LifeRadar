@@ -78,3 +78,12 @@ matrix-rust-sdk-store/
 data/
 1
 bin/backfill-from-beeper/
+
+# Agent/local runtime artifacts
+.claude/settings.local.json
+.pi/
+.remember/
+.swarm/
+ruvector.db
+liferadar-api/liferadar-api
+messaging-runtime/liferadar-messaging-runtime
