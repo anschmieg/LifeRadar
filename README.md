@@ -2,19 +2,27 @@
 
 Personal intelligence and communications triage system.
 
-Ingests messages from Telegram, WhatsApp, Matrix/Beeper legacy data, Microsoft Graph (Outlook), and Google Calendar into
-PostgreSQL/pgvector, then exposes everything via an MCP API for Hermes Agent.
+Targets Beeper Desktop conversations as the primary live messaging source, then exposes them through the LifeRadar API and MCP surface for Hermes Agent. Legacy Matrix data can remain in the database for history and recovery, but it is no longer the active messaging runtime.
 
-**Status:** Phase 1 complete. See SPEC.md for full roadmap.
+**Status:** Messaging runtime and primary API have been rewritten around Beeper Desktop + Go. See [SPEC.md](/Users/adrian/Projects/LifeRadar/SPEC.md) for the broader roadmap.
 
-## Local Matrix Harness
+Important note as of 2026-04-25:
+
+- Beeper's official Desktop API docs explicitly advertise accounts, chats, messages, and
+  websocket events.
+- Our current sidecar/runtime tests have **not** yet proven full end-to-end ingestion in the
+  containerized environment.
+- Treat the Beeper Desktop sidecar path as the active direction, but still under runtime
+  validation rather than fully settled production truth.
+
+## Local Beeper Runtime
 
 ```bash
-cp .env.local.example .env.local
-# Set LIFERADAR_MATRIX_HOMESERVER_URL in .env.local
-bin/localdev/matrix-up.sh
-bin/localdev/matrix-auth.sh
-bin/localdev/matrix-smoke.sh
+cp .env.example .env
+# Set BEEPER_APPIMAGE_URL for the target server architecture.
+# The Coolify host currently uses the Linux ARM64 Beeper AppImage.
+# Start the rewritten stack.
+docker compose -f docker-compose.local.yaml up -d liferadar-db liferadar-beeper-sidecar liferadar-messaging-runtime liferadar-api
 ```
 
 If you set `LIFERADAR_API_KEY`, include it as `Authorization: Bearer ...` or `X-API-Key`
@@ -22,41 +30,60 @@ when calling write endpoints such as `POST /messages/send` or when proxying thro
 In production, MCP is exposed at `https://liferadar.nothing.pink/mcp`; do not publish a
 separate MCP subdomain.
 
-The local Matrix harness is self-contained and uses [docker-compose.local.yaml](/Users/adrian/Projects/LifeRadar/docker-compose.local.yaml:1). It keeps local state under `./data/` and intentionally disables Outlook, Google Calendar, and the legacy SQLite Matrix backfill path by default so Matrix testing stays isolated.
+The local Beeper runtime is defined in [docker-compose.local.yaml](/Users/adrian/Projects/LifeRadar/docker-compose.local.yaml:1). It keeps persistent Beeper state under `./data/beeper-home`, runs Beeper Desktop under `Xvfb`, and exposes noVNC only when you enable it in the environment.
+
+Desktop API expectations:
+
+- Accounts, chats, messages, and `/v1/ws` live events are part of Beeper's documented API
+  surface.
+- If the sidecar returns empty bodies or closes websocket sessions immediately, treat that as
+  a sidecar/runtime mismatch to debug, not as proof that the Beeper Desktop API is only a
+  control surface.
 
 ## General Dev Compose
 
 ```bash
 cp .env.example .env
-# Fill in credentials (see .env.example)
+# Fill in credentials, especially BEEPER_ACCESS_TOKEN after onboarding in Beeper Desktop.
 docker compose up -d
-docker compose logs -f worker
+docker compose logs -f liferadar-messaging-runtime
 ```
 
 ## Architecture
 
-- **life-radar-worker** — probe pipeline running every 5 minutes
+- **liferadar-beeper-sidecar** — Beeper Desktop under `Xvfb`, with optional VNC/noVNC for onboarding
+- **liferadar-messaging-runtime** — Go service for account discovery, chat sync, live events, and outbound send
 - **life-radar-db** — pgvector:pg17 with connector state tables
-- **life-radar-api** (Phase 2) — FastAPI HTTP API
-- **life-radar-chat-gateway** — direct Telegram/WhatsApp auth, sync, and send runtime
-- **life-radar-matrix-bridge** — internal Matrix send bridge
-- **MCP server** (Phase 3) — OpenAPI-generated MCP tools for Hermes
+- **liferadar-api** — Go HTTP API over the rewritten messaging runtime
+- **liferadar-mcp** — MCP server that keeps the external tool surface stable
+- **liferadar-worker** — background probes for Outlook/calendar/memory extraction
+- **docker-compose.legacy.yaml** — optional Matrix-era services for archived recovery/import scenarios
 
-## Connector Notes
+## Onboarding
 
-- Telegram uses a direct personal-account connector with browser-assisted login.
-- WhatsApp uses a persistent consumer multi-device session with QR login.
-- Matrix runs through the first-class `liferadar-matrix` client path and is controlled by `LIFERADAR_MATRIX_ENABLED`.
-- Matrix sync now persists a global `matrix_sync_checkpoint` plus per-conversation
-  `matrix_room_checkpoint` metadata to avoid re-walking full history each cycle.
-- The raw HTTP Matrix path is retained as an explicit recovery mode, not the normal ingest path.
-- `POST /messages/send` performs direct sends for `source='telegram'` and `source='whatsapp'`.
-- Matrix send remains available when `LIFERADAR_MATRIX_ENABLED=true` and a valid Matrix session is present.
+1. Start `liferadar-beeper-sidecar` with `BEEPER_VNC_ENABLED=true` and `BEEPER_NOVNC_ENABLED=true`.
+2. Open the noVNC endpoint and sign into Beeper Desktop manually.
+3. Enable the Beeper Desktop API in Beeper settings.
+4. Create an access token and copy it into `BEEPER_ACCESS_TOKEN`.
+5. Restart `liferadar-messaging-runtime`.
+6. Disable VNC/noVNC for steady-state operation once the token and profile volume are working.
+
+`GET /connectors` is intended to report Beeper-centric runtime health, token validity,
+connected accounts, last sync, and last live-event freshness once the sidecar/runtime path is
+working end to end. `POST /messages/send` only sends for conversations whose metadata marks
+them as `transport=beeper_desktop`.
+
+## Rewrite Notes
+
+- Beeper Desktop is the single active messaging transport target in v1.
+- Telegram, WhatsApp, and Signal are modeled through Beeper account metadata, not through separate LifeRadar connectors.
+- Legacy Matrix or direct connector records can stay in the database for history, but LifeRadar no longer preserves their runtime quirks just for compatibility.
+- The old connector login pages are intentionally retired. Operator onboarding now happens inside Beeper Desktop.
 
 ## Phases
 
 1. Phase 1 (done) - Standalone Docker Compose, all probe scripts
-2. Phase 2 - FastAPI HTTP API server
+2. Phase 2 (done) - Application API, now implemented in Go
 3. Phase 3 - MCP server (OpenAPI to MCP generation)
 4. Phase 4 - On-demand agent for deep-dive tasks
 5. Phase 5 - Full task management with Linear/project tool integration
@@ -74,11 +101,6 @@ Utility scripts live in `bin/`. For the Nextcloud legacy migration compare statu
 ./bin/nextcloud-status
 ```
 
-For local Matrix work, use:
+For legacy Matrix recovery work, the old helper scripts remain in `bin/localdev/`, but they are no longer part of the primary architecture.
 
-```bash
-bin/localdev/matrix-up.sh
-bin/localdev/matrix-auth.sh
-bin/localdev/matrix-smoke.sh --decryption
-bin/localdev/matrix-reset.sh
-```
+If you need the archived Matrix stack, layer [docker-compose.legacy.yaml](/Users/adrian/Projects/LifeRadar/docker-compose.legacy.yaml:1) on top of the main compose file instead of using it in the default deployment path.

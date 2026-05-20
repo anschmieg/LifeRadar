@@ -1,0 +1,80 @@
+services:
+  liferadar-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.matrix-services
+      target: worker-runtime
+    environment:
+      LIFERADAR_MATRIX_ENABLED: "${LIFERADAR_MATRIX_ENABLED:-true}"
+      LIFERADAR_MATRIX_LEGACY_IMPORT_ENABLED: "${LIFERADAR_MATRIX_LEGACY_IMPORT_ENABLED:-true}"
+
+  liferadar-chat-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.chat-gateway
+    container_name: liferadar-chat-gateway
+    environment:
+      LIFERADAR_DB_HOST: "${LIFERADAR_DB_HOST}"
+      LIFERADAR_DB_PORT: "${LIFERADAR_DB_PORT}"
+      LIFERADAR_DB_NAME: "${LIFERADAR_DB_NAME}"
+      LIFERADAR_DB_USER: "${LIFERADAR_DB_USER}"
+      LIFERADAR_DB_PASSWORD: "${LIFERADAR_DB_PASSWORD}"
+      LIFERADAR_CONNECTOR_SESSION_DIR: /app/connectors
+      LIFERADAR_CHAT_GATEWAY_PORT: 8020
+      LIFERADAR_TELEGRAM_ENABLED: "${LIFERADAR_TELEGRAM_ENABLED:-}"
+      LIFERADAR_WHATSAPP_ENABLED: "${LIFERADAR_WHATSAPP_ENABLED:-}"
+      LIFERADAR_WHATSAPP_UNOFFICIAL_ALLOWED: "${LIFERADAR_WHATSAPP_UNOFFICIAL_ALLOWED:-}"
+      TELEGRAM_API_ID: "${TELEGRAM_API_ID:-}"
+      TELEGRAM_API_HASH: "${TELEGRAM_API_HASH:-}"
+      LIFERADAR_CONNECTOR_BACKFILL_LIMIT_PER_CHAT: "${LIFERADAR_CONNECTOR_BACKFILL_LIMIT_PER_CHAT:-}"
+    volumes:
+      - ${LIFERADAR_DATA_ROOT:-/data/liferadar}/connectors:/app/connectors
+    expose:
+      - "8020"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - coolify
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8020/health').then(r=>{if(!r.ok) process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  liferadar-matrix-bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile.matrix-services
+      target: matrix-bridge-runtime
+    container_name: liferadar-matrix-bridge
+    environment:
+      LIFERADAR_DB_HOST: "${LIFERADAR_DB_HOST}"
+      LIFERADAR_DB_PORT: "${LIFERADAR_DB_PORT}"
+      LIFERADAR_DB_NAME: "${LIFERADAR_DB_NAME}"
+      LIFERADAR_DB_USER: "${LIFERADAR_DB_USER}"
+      LIFERADAR_DB_PASSWORD: "${LIFERADAR_DB_PASSWORD}"
+    volumes:
+      - ${LIFERADAR_DATA_ROOT:-/data/liferadar}/identity:/app/identity
+    expose:
+      - "8010"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - coolify
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health', timeout=5).read()"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s

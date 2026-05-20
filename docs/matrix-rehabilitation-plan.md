@@ -1,5 +1,7 @@
 # LifeRadar Matrix Rehabilitation — Comprehensive Report
 
+> Historical note as of 2026-04-22: this document describes the earlier Matrix-first architecture and a potential Matrix rehabilitation path. LifeRadar's active messaging path is now Beeper Desktop sidecar + Go runtime + Go API, so treat this report as legacy design history unless intentionally revisiting Matrix.
+
 ## Document Info
 
 | Field | Value |
@@ -79,7 +81,7 @@ This report defines two phases:
 │  └────────────────────────────────────────────────────────────────────┘   │
 │                                                                             │
 │  ┌────────────────────────────────────────────────────────────────────┐   │
-│  │  life-radar-identity (Docker named volume → /data/life-radar/identity)│ │
+│  │  liferadar-identity (Docker named volume → /data/liferadar/identity) │ │
 │  │  matrix-session.json      ← access_token, refresh_token, user_id     │   │
 │  │  matrix-rust-sdk-store/   ← SQLite: crypto, room state, event cache  │   │
 │  │  beeper-e2e-keys.txt      ← Beeper Desktop Megolm session export    │   │
@@ -417,14 +419,14 @@ LIFE_RADAR_MATRIX_ENABLED=true
 LIFE_RADAR_MATRIX_HOMESERVER_URL=https://matrix.beeper.com
 
 # Session and identity (copied from OpenClaw data mount, or fresh from oauth-device-flow.mjs)
-MATRIX_SESSION_PATH=/data/life-radar/identity/matrix-session.json
+MATRIX_SESSION_PATH=/data/liferadar/identity/matrix-session.json
 MATRIX_RUST_SESSION_PATH=${MATRIX_SESSION_PATH}
-MATRIX_RUST_STORE=/data/life-radar/identity/matrix-rust-sdk-store
+MATRIX_RUST_STORE=/data/liferadar/identity/matrix-rust-sdk-store
 
 # Room key export (Beeper Desktop format, or any Matrix client Megolm export)
 # Supports: Beeper Desktop export, Element export, or Matrix E2E Backup restore
-MATRIX_ROOM_KEYS_PATH=/data/life-radar/identity/matrix-e2e-keys.txt
-MATRIX_ROOM_KEYS_PASSPHRASE_PATH=/data/life-radar/identity/.e2e-keys-passphrase
+MATRIX_ROOM_KEYS_PATH=/data/liferadar/identity/matrix-e2e-keys.txt
+MATRIX_ROOM_KEYS_PASSPHRASE_PATH=/data/liferadar/identity/.e2e-keys-passphrase
 
 # Backward compat — remove in next release
 # MATRIX_E2EE_EXPORT_PATH (use MATRIX_ROOM_KEYS_PATH instead)
@@ -635,7 +637,7 @@ After Phase A + Phase B, the architecture becomes:
 └─────────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  life-radar-identity (Docker named volume → /data/life-radar/identity)      │
+│  liferadar-identity (Docker named volume → /data/liferadar/identity)         │
 │                                                                             │
 │  matrix-session.json       ← OAuth session (access_token, refresh_token)   │
 │  matrix-rust-sdk-store/   ← SDK state: crypto, room state, event cache    │

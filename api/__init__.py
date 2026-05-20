@@ -1,1 +1,1 @@
-# LifeRadar API Server
+# LifeRadar Python support package

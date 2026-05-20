@@ -31,8 +31,7 @@ services:
       LIFERADAR_DB_USER: "${LIFERADAR_DB_USER:-life_radar}"
       LIFERADAR_DB_PASSWORD: "${LIFERADAR_DB_PASSWORD:-localdev-password}"
       LIFERADAR_API_KEY: "${LIFERADAR_API_KEY:-localdev-shared-secret}"
-      LIFERADAR_MATRIX_BRIDGE_URL: http://liferadar-matrix-bridge:8010
-      LIFERADAR_CHAT_GATEWAY_URL: http://liferadar-chat-gateway:8020
+      LIFERADAR_MESSAGING_RUNTIME_URL: http://liferadar-messaging-runtime:8030
       LIFERADAR_MATRIX_ENABLED: "${LIFERADAR_MATRIX_ENABLED:-true}"
       LIFERADAR_MATRIX_HOMESERVER_URL: "${LIFERADAR_MATRIX_HOMESERVER_URL:-}"
       MATRIX_RUST_SESSION_PATH: /app/identity/matrix-session.json
@@ -40,69 +39,62 @@ services:
     depends_on:
       liferadar-db:
         condition: service_healthy
+      liferadar-messaging-runtime:
+        condition: service_started
     ports:
       - "${LIFERADAR_API_PORT:-18000}:8000"
     volumes:
       - ./data/identity:/app/identity
     restart: unless-stopped
 
-  liferadar-chat-gateway:
+  liferadar-beeper-sidecar:
     build:
       context: .
-      dockerfile: Dockerfile.chat-gateway
-    profiles: ["extras"]
+      dockerfile: Dockerfile.beeper-sidecar
+      args:
+        BEEPER_APPIMAGE_URL: "${BEEPER_APPIMAGE_URL:-https://api.beeper.com/desktop/download/linux/arm64/stable/com.automattic.beeper.desktop}"
     environment:
-      LIFERADAR_DB_HOST: liferadar-db
-      LIFERADAR_DB_PORT: 5432
-      LIFERADAR_DB_NAME: "${LIFERADAR_DB_NAME:-life_radar}"
-      LIFERADAR_DB_USER: "${LIFERADAR_DB_USER:-life_radar}"
-      LIFERADAR_DB_PASSWORD: "${LIFERADAR_DB_PASSWORD:-localdev-password}"
-      LIFERADAR_CONNECTOR_SESSION_DIR: /app/connectors
-      LIFERADAR_CHAT_GATEWAY_PORT: 8020
-      LIFERADAR_TELEGRAM_ENABLED: "${LIFERADAR_TELEGRAM_ENABLED:-false}"
-      LIFERADAR_WHATSAPP_ENABLED: "${LIFERADAR_WHATSAPP_ENABLED:-false}"
-      LIFERADAR_WHATSAPP_UNOFFICIAL_ALLOWED: "${LIFERADAR_WHATSAPP_UNOFFICIAL_ALLOWED:-false}"
-      TELEGRAM_API_ID: "${TELEGRAM_API_ID:-}"
-      TELEGRAM_API_HASH: "${TELEGRAM_API_HASH:-}"
-      LIFERADAR_CONNECTOR_BACKFILL_LIMIT_PER_CHAT: "${LIFERADAR_CONNECTOR_BACKFILL_LIMIT_PER_CHAT:-2000}"
-    depends_on:
-      liferadar-db:
-        condition: service_healthy
+      DISPLAY: ":99"
+      BEEPER_DISABLE_GPU: "${BEEPER_DISABLE_GPU:-true}"
+      BEEPER_VNC_ENABLED: "${BEEPER_VNC_ENABLED:-true}"
+      BEEPER_NOVNC_ENABLED: "${BEEPER_NOVNC_ENABLED:-true}"
+      BEEPER_VNC_PORT: 5900
+      BEEPER_NOVNC_PORT: 6080
     ports:
-      - "${LIFERADAR_CHAT_GATEWAY_PORT_PUBLIC:-18020}:8020"
+      - "${LIFERADAR_BEEPER_NOVNC_PORT:-16080}:6080"
+      - "${LIFERADAR_BEEPER_VNC_PORT:-15900}:5900"
     volumes:
-      - ./data/connectors:/app/connectors
+      - ./data/beeper-home:/data/beeper-home
     restart: unless-stopped
 
-  liferadar-matrix-bridge:
+  liferadar-messaging-runtime:
     build:
       context: .
-      dockerfile: Dockerfile.matrix-services
-      target: matrix-bridge-runtime
+      dockerfile: Dockerfile.messaging-runtime
     environment:
       LIFERADAR_DB_HOST: liferadar-db
       LIFERADAR_DB_PORT: 5432
       LIFERADAR_DB_NAME: "${LIFERADAR_DB_NAME:-life_radar}"
       LIFERADAR_DB_USER: "${LIFERADAR_DB_USER:-life_radar}"
       LIFERADAR_DB_PASSWORD: "${LIFERADAR_DB_PASSWORD:-localdev-password}"
-      MATRIX_RUST_SESSION_PATH: /app/identity/matrix-session.json
-      MATRIX_RUST_STORE: /app/identity/matrix-rust-sdk-store
-      MATRIX_SECRETS_BUNDLE_PATH: /app/identity/matrix-secrets-bundle.json
-      MATRIX_ROOM_KEYS_PATH: /app/identity/matrix-e2e-keys.txt
-      MATRIX_ROOM_KEYS_PASSPHRASE_PATH: /app/identity/.e2e-keys-passphrase
-      MATRIX_RECOVERY_PASSPHRASE_PATH: /app/identity/.e2e-keys-passphrase
-      MATRIX_RUST_KEY_IMPORT_MARKER: /app/identity/matrix-rust-sdk-store/room-key-import-marker.json
-      LIFERADAR_MATRIX_KEY_IMPORT_ENABLED: "${LIFERADAR_MATRIX_KEY_IMPORT_ENABLED:-false}"
+      BEEPER_DESKTOP_BASE_URL: http://liferadar-beeper-sidecar:23373
+      BEEPER_ACCESS_TOKEN: "${BEEPER_ACCESS_TOKEN:-}"
+      LIFERADAR_MESSAGING_RUNTIME_PORT: 8030
+      LIFERADAR_BEEPER_SYNC_INTERVAL: "${LIFERADAR_BEEPER_SYNC_INTERVAL:-10m}"
+      LIFERADAR_BEEPER_BACKFILL_PAGE_LIMIT: "${LIFERADAR_BEEPER_BACKFILL_PAGE_LIMIT:-100}"
+      LIFERADAR_BEEPER_BACKFILL_CHAT_LIMIT: "${LIFERADAR_BEEPER_BACKFILL_CHAT_LIMIT:-250}"
+      LIFERADAR_BEEPER_BACKFILL_MESSAGE_LIMIT: "${LIFERADAR_BEEPER_BACKFILL_MESSAGE_LIMIT:-2000}"
     depends_on:
       liferadar-db:
         condition: service_healthy
+      liferadar-beeper-sidecar:
+        condition: service_started
     ports:
-      - "${LIFERADAR_MATRIX_BRIDGE_PORT:-18010}:8010"
-    volumes:
-      - ./data/identity:/app/identity
+      - "${LIFERADAR_MESSAGING_RUNTIME_PORT_PUBLIC:-18030}:8030"
     restart: unless-stopped
 
   liferadar-worker:
+    profiles: ["legacy"]
     build:
       context: .
       dockerfile: Dockerfile.matrix-services
@@ -169,7 +161,7 @@ services:
     depends_on:
       liferadar-api:
         condition: service_started
-      liferadar-chat-gateway:
+      liferadar-messaging-runtime:
         condition: service_started
     ports:
       - "${LIFERADAR_MCP_PORT:-18090}:8090"
