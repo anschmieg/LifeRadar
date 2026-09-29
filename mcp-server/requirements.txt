@@ -1,5 +1,9 @@
-mcp>=1.0.0
 httpx>=0.27.0
 starlette>=0.40.0
 hypercorn>=0.16.0
 itsdangerous>=2.0.0
+
+# mcp 2.x removed the decorator API (Server.list_tools/call_tool) used by
+# server.py; without this pin the container crashes at import with
+# `AttributeError: 'Server' object has no attribute 'list_tools'`.
+mcp>=1.0.0,<2.0.0
