@@ -10,7 +10,7 @@ source .env
 CLIENT_ID="${GOOGLE_CALENDAR_CLIENT_ID}"
 CLIENT_SECRET="${GOOGLE_CALENDAR_CLIENT_SECRET}"
 REDIRECT_URI="urn:ietf:wg:oauth:2.0:oob"
-SCOPE="https://www.googleapis.com/auth/calendar.read https://www.googleapis.com/auth/calendar"
+SCOPE="https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar"
 
 AUTH_URL="https://accounts.google.com/o/oauth2/v2/auth?\
 client_id=${CLIENT_ID}&\
