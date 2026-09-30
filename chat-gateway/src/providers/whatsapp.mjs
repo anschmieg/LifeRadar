@@ -58,9 +58,13 @@ export class WhatsAppConnector extends BaseConnector {
   async logout({ account_id: accountId } = {}) {
     if (this.socket) {
       try {
-        await this.socket.logout();
+        // Local-only teardown. `socket.logout()` on Baileys performs a REMOTE
+        // unpair (remove-companion-device) — a provider mutation that our
+        // read-only policy forbids. `end()` simply closes the socket and
+        // keeps the persisted (pairing) session intact for the next start.
+        await this.socket.end();
       } catch {
-        // ignore logout errors; session cleanup below is authoritative
+        // ignore end errors; session cleanup below is authoritative
       }
       this.socket = null;
     }
