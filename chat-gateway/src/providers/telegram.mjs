@@ -302,10 +302,24 @@ export class TelegramConnector extends BaseConnector {
       const message = event.message;
       const peerId = message?.peerId?.channelId || message?.peerId?.chatId || message?.peerId?.userId;
       if (!message?.id || peerId == null) return;
-      const dialog = { id: String(peerId), entity: {}, title: String(peerId) };
-      await this.db.ingestTelegramMessage(accountId, dialog, message, me?.id);
-      await this.db.setCheckpoint(this.provider, accountId, 'live_cursor', { message_id: message.id, peer_id: String(peerId) });
-      await this.db.upsertConnectorAccount({ provider: this.provider, accountId, authState: 'connected', enabled: true, lastSyncedAt: new Date(), metadata: { live_update_at: new Date().toISOString() } });
+      let entity = null;
+      if (typeof client.getEntity === 'function') {
+        try {
+          entity = await client.getEntity(peerId);
+        } catch {
+          entity = null;
+        }
+      }
+      const dialog = entity
+        ? { id: String(entity.id ?? peerId), entity, title: entity.title || entity.username || String(peerId) }
+        : { id: String(peerId), entity: {}, title: String(peerId) };
+      try {
+        await this.db.ingestTelegramMessage(accountId, dialog, message, me?.id);
+        await this.db.setCheckpoint(this.provider, accountId, 'live_cursor', { message_id: message.id, peer_id: String(peerId) });
+        await this.db.upsertConnectorAccount({ provider: this.provider, accountId, authState: 'connected', enabled: true, lastSyncedAt: new Date(), metadata: { live_update_at: new Date().toISOString() } });
+      } catch (error) {
+        this.logger.error({ err: error }, 'Telegram live ingest failed; checkpoint unchanged');
+      }
     }, NewMessage);
   }
 
@@ -339,7 +353,7 @@ export class TelegramConnector extends BaseConnector {
     const dialogs = await client.getDialogs({ limit: 100 });
 
     for (const dialog of dialogs) {
-      const checkpoint = await this.db.getCheckpoint?.(this.provider, accountId, `dialog:${dialog.id}`);
+      const checkpoint = await this.db.getCheckpoint(this.provider, accountId, `dialog:${dialog.id}`);
       const minId = Number(checkpoint?.message_id || 0);
       let remaining = limitPerChat;
       let offsetId = 0;
@@ -354,13 +368,16 @@ export class TelegramConnector extends BaseConnector {
         }
         remaining -= messages.length;
         offsetId = Math.min(...messages.map((message) => message.id));
+        // Persist the per-dialog high-water mark after EVERY page so a crash
+        // mid-loop resumes from the last persisted cursor and never regresses.
+        const persisted = Math.max(minId, newestId);
+        await this.db.setCheckpoint(this.provider, accountId, `dialog:${dialog.id}`, {
+          message_id: persisted,
+          dialog_id: String(dialog.id),
+          updated_at: new Date().toISOString(),
+        });
         if (messages.length < pageSize) break;
       }
-      await this.db.setCheckpoint(this.provider, accountId, `dialog:${dialog.id}`, {
-        message_id: newestId,
-        dialog_id: String(dialog.id),
-        updated_at: new Date().toISOString(),
-      });
     }
 
     await this.db.upsertConnectorAccount({

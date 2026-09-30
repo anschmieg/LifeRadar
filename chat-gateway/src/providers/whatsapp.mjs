@@ -91,19 +91,38 @@ export class WhatsAppConnector extends BaseConnector {
   }
 
   #scheduleReconnect() {
-    if (this.stopped || this.reconnectTimer) return;
+    if (this.stopped || this.reconnectTimer || this.connecting) return;
     const cap = Math.min(this.reconnectMaxMs, this.reconnectBaseMs * (2 ** this.reconnectAttempt++));
     const delay = Math.round(cap * (0.5 + this.random()));
     this.reconnectTimer = this.schedule(async () => {
-      this.reconnectTimer = null;
-      if (!this.stopped) {
-        try { await this.#connectSocket(); } catch (error) { this.logger.warn({ err: error }, 'WhatsApp reconnect failed'); this.#scheduleReconnect(); }
+      try {
+        if (this.stopped) return;
+        await this.#connectSocket();
+      } catch (error) {
+        this.logger.warn({ err: error }, 'WhatsApp reconnect failed');
+      } finally {
+        this.reconnectTimer = null;
+        // Re-arm a bounded retry after a hard failure even when no further
+        // close event fires (Baileys removes the connection.update listener on
+        // close), and only when we did not end up with a live socket.
+        if (!this.stopped && !this.socket) this.#scheduleReconnect();
       }
     }, delay);
   }
 
   async #connectSocket(attemptId = null) {
     if (this.socket) return this.socket;
+    // Single-flight: concurrent close events must not stack socket builds.
+    if (this.connecting) return this.connecting;
+    this.connecting = this.#buildSocket(attemptId);
+    try {
+      return await this.connecting;
+    } finally {
+      this.connecting = null;
+    }
+  }
+
+  async #buildSocket(attemptId = null) {
     let socket;
     let saveCreds = () => {};
     if (this.createSocket) {
@@ -113,112 +132,164 @@ export class WhatsAppConnector extends BaseConnector {
       const authDir = path.join(this.sessionDir, 'auth');
       const auth = await baileys.useMultiFileAuthState(authDir);
       saveCreds = auth.saveCreds;
-      socket = baileys.default({ auth: auth.state, printQRInTerminal: false, browser: ['LifeRadar', 'Chrome', '1.0'], syncFullHistory: true, markOnlineOnConnect: false });
+      socket = baileys.default({
+        auth: auth.state,
+        printQRInTerminal: false,
+        browser: ['LifeRadar', 'Chrome', '1.0'],
+        // History sync is server-initiated; we do NOT force a full bootstrap
+        // re-download on every reconnect. The durable per-remoteJid cursor
+        // below makes any re-delivered history incremental (deduped), so
+        // reconnects only ingest messages newer than the persisted cursor.
+        shouldSyncHistoryMessage: () => true,
+        markOnlineOnConnect: false,
+      });
     }
 
     socket.ev.on('creds.update', saveCreds);
     socket.ev.on('connection.update', async (update) => {
-      if (update.qr) {
-        const qrSvg = await QRCode.toString(update.qr, { type: 'svg', margin: 1 });
-        this.qrState = { qr_text: update.qr, qr_svg: qrSvg };
-        if (attemptId && this.attempts.has(attemptId)) {
-          this.updateAttempt(attemptId, {
-            state: 'awaiting_qr_scan',
-            qr_text: update.qr,
-            qr_svg: qrSvg,
-            prompt: 'Scan the QR code with WhatsApp on your phone.',
-          });
+      try {
+        if (update.qr) {
+          const qrSvg = await QRCode.toString(update.qr, { type: 'svg', margin: 1 });
+          this.qrState = { qr_text: update.qr, qr_svg: qrSvg };
+          if (attemptId && this.attempts.has(attemptId)) {
+            this.updateAttempt(attemptId, {
+              state: 'awaiting_qr_scan',
+              qr_text: update.qr,
+              qr_svg: qrSvg,
+              prompt: 'Scan the QR code with WhatsApp on your phone.',
+            });
+          }
         }
-      }
 
-      if (update.connection === 'open') {
-        this.reconnectAttempt = 0;
-        this.accountId = socket.user?.id || this.defaultAccountId;
-        await this.db.upsertConnectorAccount({
-          provider: this.provider,
-          accountId: this.accountId,
-          displayLabel: socket.user?.name || 'WhatsApp',
-          authState: 'connected',
-          enabled: true,
-          lastSyncedAt: new Date(),
-          lastError: null,
-          lastErrorAt: null,
-          metadata: {
-            jid: socket.user?.id || null,
-            paired_at: new Date().toISOString(),
-          },
-        });
-        if (attemptId && this.attempts.has(attemptId)) {
-          this.updateAttempt(attemptId, {
-            state: 'completed',
-            qr_text: null,
-            qr_svg: null,
-            prompt: null,
-            account_id: this.accountId,
+        if (update.connection === 'open') {
+          this.reconnectAttempt = 0;
+          this.accountId = socket.user?.id || this.defaultAccountId;
+          await this.db.upsertConnectorAccount({
+            provider: this.provider,
+            accountId: this.accountId,
+            displayLabel: socket.user?.name || 'WhatsApp',
+            authState: 'connected',
+            enabled: true,
+            lastSyncedAt: new Date(),
+            // Deliberate clear of prior errors on successful connect.
+            lastError: null,
+            lastErrorAt: null,
+            metadata: {
+              jid: socket.user?.id || null,
+              paired_at: new Date().toISOString(),
+            },
           });
+          if (attemptId && this.attempts.has(attemptId)) {
+            this.updateAttempt(attemptId, {
+              state: 'completed',
+              qr_text: null,
+              qr_svg: null,
+              prompt: null,
+              account_id: this.accountId,
+            });
+          }
         }
+      } catch (error) {
+        this.logger.error({ err: error }, 'WhatsApp connection.update handling failed');
       }
 
       if (update.connection === 'close') {
         const disconnectError = update.lastDisconnect?.error;
-        await this.db.upsertConnectorAccount({
-          provider: this.provider,
-          accountId: this.accountId,
-          authState: 'error',
-          enabled: true,
-          lastError: disconnectError?.message || 'connection closed',
-          lastErrorAt: new Date(),
-          metadata: {
-            disconnect_reason: disconnectError?.output?.statusCode ?? null,
-          },
-        });
+        try {
+          await this.db.upsertConnectorAccount({
+            provider: this.provider,
+            accountId: this.accountId,
+            authState: 'error',
+            enabled: true,
+            lastError: disconnectError?.message || 'connection closed',
+            lastErrorAt: new Date(),
+            metadata: {
+              disconnect_reason: disconnectError?.output?.statusCode ?? null,
+            },
+          });
+        } catch (error) {
+          this.logger.error({ err: error }, 'WhatsApp close persistence failed');
+        }
         this.socket = null;
         this.#scheduleReconnect();
       }
     });
 
     socket.ev.on('chats.upsert', async (chats) => {
-      for (const chat of chats || []) {
-        await this.db.ingestWhatsAppChat(this.accountId, chat);
+      try {
+        for (const chat of chats || []) {
+          await this.db.ingestWhatsAppChat(this.accountId, chat);
+        }
+        await this.db.upsertConnectorAccount({
+          provider: this.provider,
+          accountId: this.accountId,
+          authState: 'connected',
+          enabled: true,
+          lastSyncedAt: new Date(),
+          metadata: { last_chats_upsert_at: new Date().toISOString() },
+        });
+      } catch (error) {
+        this.logger.error({ err: error }, 'WhatsApp chats.upsert ingest failed');
       }
-      await this.db.upsertConnectorAccount({
-        provider: this.provider,
-        accountId: this.accountId,
-        authState: 'connected',
-        enabled: true,
-        lastSyncedAt: new Date(),
-        metadata: { last_chats_upsert_at: new Date().toISOString() },
-      });
     });
 
-    socket.ev.on('messaging-history.set', async ({ chats = [], messages = [] }) => {
-      for (const chat of chats) {
-        await this.db.ingestWhatsAppChat(this.accountId, chat);
+    socket.ev.on('messaging-history.set', async ({ chats = [], messages = [] } = {}) => {
+      try {
+        const prev = await this.db.getCheckpoint(this.provider, this.accountId, 'history_sync');
+        const dialogs = { ...(prev?.dialogs || {}) };
+
+        // Incremental: only ingest messages newer than the durable per-jid
+        // high-water cursor, so re-delivered history after a reconnect does
+        // not duplicate rows.
+        const toIngest = [];
+        for (const message of messages) {
+          const jid = message?.key?.remoteJid;
+          const ts = Number(message.messageTimestamp || 0);
+          if (!jid || ts <= (dialogs[jid]?.max_timestamp || 0)) continue;
+          toIngest.push(message);
+        }
+
+        for (const chat of chats) {
+          await this.db.ingestWhatsAppChat(this.accountId, chat);
+        }
+        for (const message of toIngest) {
+          await this.db.ingestWhatsAppMessage(this.accountId, message);
+        }
+
+        // The history_sync checkpoint must NOT advance unless persistence
+        // succeeded — this only runs after every ingest above resolved.
+        for (const message of messages) {
+          const jid = message?.key?.remoteJid;
+          const ts = Number(message.messageTimestamp || 0);
+          if (!jid) continue;
+          const previous = dialogs[jid]?.max_timestamp || 0;
+          dialogs[jid] = { max_timestamp: Math.max(previous, ts), updated_at: new Date().toISOString() };
+        }
+        await this.db.setCheckpoint(this.provider, this.accountId, 'history_sync', {
+          dialogs,
+          updated_at: new Date().toISOString(),
+        });
+      } catch (error) {
+        this.logger.error({ err: error }, 'WhatsApp history sync failed; checkpoint unchanged');
       }
-      for (const message of messages) {
-        await this.db.ingestWhatsAppMessage(this.accountId, message);
-      }
-      const newest = messages.reduce((latest, message) => !latest || Number(message.messageTimestamp || 0) > Number(latest.messageTimestamp || 0) ? message : latest, null);
-      await this.db.setCheckpoint(this.provider, this.accountId, 'history_sync', {
-        latest_message_id: newest?.key?.id || null,
-        latest_remote_jid: newest?.key?.remoteJid || null,
-        latest_timestamp: newest?.messageTimestamp ? Number(newest.messageTimestamp) : null,
-        updated_at: new Date().toISOString(),
-      });
     });
 
-    socket.ev.on('messages.upsert', async ({ messages = [] }) => {
-      for (const message of messages) {
-        await this.db.ingestWhatsAppMessage(this.accountId, message);
+    socket.ev.on('messages.upsert', async ({ messages = [] } = {}) => {
+      try {
+        for (const message of messages) {
+          await this.db.ingestWhatsAppMessage(this.accountId, message);
+        }
+        await this.db.upsertConnectorAccount({
+          provider: this.provider,
+          accountId: this.accountId,
+          authState: 'connected',
+          enabled: true,
+          lastSyncedAt: new Date(),
+          metadata: { last_message_upsert_at: new Date().toISOString() },
+        });
+      } catch (error) {
+        this.logger.error({ err: error }, 'WhatsApp messages.upsert ingest failed');
       }
-      await this.db.upsertConnectorAccount({
-        provider: this.provider,
-        accountId: this.accountId,
-        authState: 'connected',
-        enabled: true,
-        lastSyncedAt: new Date(),
-        metadata: { last_message_upsert_at: new Date().toISOString() },
-      });
     });
 
     this.socket = socket;
