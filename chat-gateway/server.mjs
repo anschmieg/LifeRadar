@@ -4,6 +4,7 @@ import pino from 'pino';
 import { GatewayDb } from './src/db.mjs';
 import { TelegramConnector } from './src/providers/telegram.mjs';
 import { WhatsAppConnector } from './src/providers/whatsapp.mjs';
+import { SignalConnector } from './src/providers/signal.mjs';
 import { rejectOutboundMessage } from './src/read-only.mjs';
 
 const logger = pino({ name: 'liferadar-chat-gateway' });
@@ -40,6 +41,15 @@ function registerConnectors() {
       provider: 'whatsapp',
       sessionDir: `${sessionDir()}/whatsapp`,
       unofficialAllowed: boolEnv('LIFERADAR_WHATSAPP_UNOFFICIAL_ALLOWED', true),
+    }));
+  }
+
+  if (boolEnv('LIFERADAR_SIGNAL_ENABLED', false)) {
+    connectors.set('signal', new SignalConnector({
+      db,
+      logger,
+      provider: 'signal',
+      sessionDir: `${sessionDir()}/signal`,
     }));
   }
 }
