@@ -4,6 +4,7 @@ import pino from 'pino';
 import { GatewayDb } from './src/db.mjs';
 import { TelegramConnector } from './src/providers/telegram.mjs';
 import { WhatsAppConnector } from './src/providers/whatsapp.mjs';
+import { rejectOutboundMessage } from './src/read-only.mjs';
 
 const logger = pino({ name: 'liferadar-chat-gateway' });
 const app = express();
@@ -126,24 +127,10 @@ app.post('/internal/connectors/:provider/logout', async (req, res) => {
 });
 
 app.post('/internal/send', async (req, res) => {
-  const { provider, external_id: externalId, content_text: contentText, conversation_id: conversationId } = req.body ?? {};
-  try {
-    if (!provider || !externalId || !contentText) {
-      const error = new Error('provider, external_id, and content_text are required');
-      error.statusCode = 400;
-      throw error;
-    }
-    const connector = getConnector(provider);
-    const result = await connector.sendMessage({
-      externalId,
-      contentText,
-      conversationId: conversationId || null,
-    });
-    res.json(result);
-  } catch (error) {
-    logger.warn({ err: error, provider }, 'send failed');
-    res.status(error.statusCode || 500).json(normalizeError(error));
-  }
+  const provider = req.body?.provider;
+  const error = rejectOutboundMessage();
+  logger.warn({ provider }, 'rejected outbound send in read-only mode');
+  res.status(error.statusCode).json(normalizeError(error));
 });
 
 const port = Number.parseInt(process.env.LIFERADAR_CHAT_GATEWAY_PORT || '8020', 10);

@@ -140,8 +140,8 @@ GET   /memories             query memory records (tag, entity, keyword)
 GET   /tasks                list planned_actions
 POST  /tasks                create task
 GET   /calendar/events      read Google Calendar (date range)
-POST  /calendar/events      upsert calendar event
-POST  /messages/send        send Matrix message (user-approved only; Outlook sends via MCP tools)
+POST  /calendar/events      legacy endpoint; outbound messaging is rejected
+POST  /messages/send        legacy endpoint; outbound messaging is rejected (HTTP 403)
 GET   /search               semantic search over memories + conversations
 GET   /probe-status         probe health + last-run timestamps
 ```

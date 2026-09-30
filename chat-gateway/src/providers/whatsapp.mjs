@@ -3,6 +3,7 @@ import path from 'node:path';
 import QRCode from 'qrcode';
 
 import { BaseConnector } from './base.mjs';
+import { rejectOutboundMessage } from '../read-only.mjs';
 
 export class WhatsAppConnector extends BaseConnector {
   constructor({ unofficialAllowed, ...opts }) {
@@ -34,13 +35,8 @@ export class WhatsAppConnector extends BaseConnector {
     return this.getLoginAttempt(attemptId);
   }
 
-  async sendMessage({ externalId, contentText }) {
-    const socket = await this.#requireSocket();
-    const response = await socket.sendMessage(externalId, { text: contentText });
-    return {
-      status: 'sent',
-      message_id: `${externalId}:${response?.key?.id ?? Date.now()}`,
-    };
+  async sendMessage() {
+    throw rejectOutboundMessage();
   }
 
   async logout({ account_id: accountId } = {}) {

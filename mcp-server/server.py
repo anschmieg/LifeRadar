@@ -33,6 +33,18 @@ VERSION = "1.0.0"
 
 # Outlook MCP pass-through configuration
 OUTLOOK_MCP_ENABLED = os.environ.get("OUTLOOK_MCP_ENABLED", "false").lower() == "true"
+OUTLOOK_READ_ONLY_TOOLS = {
+    "list_accounts",
+    "list_mail_messages",
+    "get_mail_message",
+    "get_mail_message_mime",
+    "list_mail_attachments",
+    "get_mailbox_settings",
+    "list_mail_folders",
+    "list_mail_child_folders",
+    "list_supported_languages",
+    "list_supported_time_zones",
+}
 
 # Use MSGraph credentials directly for the Softeria subprocess (same Azure AD app).
 MS365_CLIENT_ID = os.environ.get("MSGRAPH_CLIENT_ID", "")
@@ -153,6 +165,8 @@ async def _discover_outlook_tools() -> list[dict]:
     for t in tools:
         if t["name"] == "login":
             continue  # handled by login-outlook
+        if t["name"] not in OUTLOOK_READ_ONLY_TOOLS:
+            continue  # temporary global read-only policy
         _outlook_tools_cache.append({
             "name": f"outlook-{t['name']}",
             "description": f"Outlook: {t.get('description', '')}",
@@ -320,40 +334,14 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="calendar_events",
-            description="Calendar events from external calendars (Google Calendar, etc.) synced into LifeRadar. Supports GET to list events and POST to create/update events.",
+            description="Read-only calendar events from external calendars (Google Calendar, etc.) synced into LifeRadar.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "from_date": {"type": "string", "description": "Start date (ISO 8601) - GET only"},
                     "to_date": {"type": "string", "description": "End date (ISO 8601) - GET only"},
                     "limit": {"type": "integer", "description": "Max results (default 50)", "default": 50},
-                    "title": {"type": "string", "description": "Event title - POST only"},
-                    "summary": {"type": "string", "description": "Event description/summary - POST only"},
-                    "scheduled_start": {"type": "string", "description": "Start datetime (ISO 8601) - POST only"},
-                    "scheduled_end": {"type": "string", "description": "End datetime (ISO 8601) - POST only"},
-                    "calendar_external_id": {"type": "string", "description": "External calendar ID for upsert - POST only"},
-                    "calendar_provider": {"type": "string", "description": "Provider: google, outlook - POST only"},
                 },
-            },
-        ),
-        Tool(
-            name="send-message",
-            description="Send a message in a direct chat conversation (Telegram, WhatsApp, or Matrix when explicitly re-enabled). The client must first prompt the user for explicit approval of this exact send action. Returns a message_id.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "conversation_id": {"type": "string", "description": "UUID of the conversation"},
-                    "content_text": {"type": "string", "description": "Message text to send"},
-                    "user_approved": {
-                        "type": "boolean",
-                        "description": "Must be true only after the client has explicitly asked the user to approve sending this exact message.",
-                    },
-                    "approval_note": {
-                        "type": "string",
-                        "description": "Short note capturing the user's explicit approval, for example 'User approved sending this exact message just now.'",
-                    },
-                },
-                "required": ["conversation_id", "content_text", "user_approved", "approval_note"],
             },
         ),
         Tool(
@@ -490,28 +478,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         case "tasks":
             result = await call_api("tasks", params)
         case "calendar_events":
-            if "title" in params or "calendar_external_id" in params:
-                result = await call_api_post("calendar/events", params)
-            else:
-                result = await call_api("calendar/events", params)
-        case "send-message":
-            if not params.get("user_approved"):
-                result = [{
-                    "error": (
-                        "Explicit user approval is required before sending a message. "
-                        "Prompt the user to approve this exact action, then retry with "
-                        "user_approved=true and a non-empty approval_note."
-                    )
-                }]
-            elif not str(params.get("approval_note", "")).strip():
-                result = [{
-                    "error": (
-                        "approval_note is required. Record a short note confirming that the "
-                        "user explicitly approved this exact send action, then retry."
-                    )
-                }]
-            else:
-                result = await call_api_post("messages/send", params)
+            result = await call_api("calendar/events", params)
         case "memories":
             result = await call_api("memories", params)
         case "probe_status":
@@ -551,6 +518,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 if not OUTLOOK_MCP_ENABLED:
                     return [TextContent(type="text", text=json.dumps({"error": "Outlook MCP is not enabled. Set OUTLOOK_MCP_ENABLED=true to enable."}))]
                 softeria_name = name[len("outlook-"):]
+                if softeria_name not in OUTLOOK_READ_ONLY_TOOLS:
+                    return [TextContent(type="text", text=json.dumps({
+                        "error": "LifeRadar is read-only: this Outlook operation is disabled. No change was made."
+                    }))]
                 result = await call_outlook_mcp(softeria_name, params)
             else:
                 result = [{"error": f"Unknown tool: {name}"}]

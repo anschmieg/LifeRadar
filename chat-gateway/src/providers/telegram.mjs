@@ -4,6 +4,7 @@ import path from 'node:path';
 import QRCode from 'qrcode';
 
 import { BaseConnector } from './base.mjs';
+import { rejectOutboundMessage } from '../read-only.mjs';
 
 function requireEnv(name) {
   const value = process.env[name];
@@ -140,14 +141,8 @@ export class TelegramConnector extends BaseConnector {
     return attempt;
   }
 
-  async sendMessage({ externalId, contentText }) {
-    const client = await this.#ensureAuthorizedClient();
-    const entity = await client.getInputEntity(externalId);
-    const message = await client.sendMessage(entity, { message: contentText });
-    return {
-      status: 'sent',
-      message_id: `${externalId}:${message.id}`,
-    };
+  async sendMessage() {
+    throw rejectOutboundMessage();
   }
 
   async logout({ account_id: accountId } = {}) {

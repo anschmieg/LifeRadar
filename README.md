@@ -17,8 +17,8 @@ bin/localdev/matrix-auth.sh
 bin/localdev/matrix-smoke.sh
 ```
 
-If you set `LIFERADAR_API_KEY`, include it as `Authorization: Bearer ...` or `X-API-Key`
-when calling write endpoints such as `POST /messages/send` or when proxying through `/mcp`.
+If you set `LIFERADAR_API_KEY`, include it as `Authorization: Bearer <token>` or `X-API-Key`
+when proxying through `/mcp`.
 In production, MCP is exposed at `https://liferadar.nothing.pink/mcp`; do not publish a
 separate MCP subdomain.
 
@@ -38,20 +38,25 @@ docker compose logs -f worker
 - **life-radar-worker** — probe pipeline running every 5 minutes
 - **life-radar-db** — pgvector:pg17 with connector state tables
 - **life-radar-api** (Phase 2) — FastAPI HTTP API
-- **life-radar-chat-gateway** — direct Telegram/WhatsApp auth, sync, and send runtime
-- **life-radar-matrix-bridge** — internal Matrix send bridge
+- **life-radar-chat-gateway** — direct Telegram/WhatsApp auth and read/sync runtime (outbound sends rejected)
+- **life-radar-matrix-bridge** — legacy internal Matrix bridge (outbound sends rejected)
 - **MCP server** (Phase 3) — OpenAPI-generated MCP tools for Hermes
 
 ## Connector Notes
 
-- Telegram uses a direct personal-account connector with browser-assisted login.
-- WhatsApp uses a persistent consumer multi-device session with QR login.
+- Telegram uses a direct personal-account connector with browser-assisted login; it is read/sync only.
+- WhatsApp uses a persistent consumer multi-device session with QR login; it is read/sync only.
+- Outbound messaging is disabled globally: no `send-message` MCP tool is registered, and the legacy
+  `POST /messages/send` and gateway `/internal/send` endpoints reject every request with HTTP 403.
+- Outlook email and Google Calendar read/sync paths remain unchanged. Calendar mutation behavior is outside
+  this temporary messaging restriction.
 - Matrix runs through the first-class `liferadar-matrix` client path and is controlled by `LIFERADAR_MATRIX_ENABLED`.
+  Its outbound message route is also rejected while read-only mode is in force.
 - Matrix sync now persists a global `matrix_sync_checkpoint` plus per-conversation
   `matrix_room_checkpoint` metadata to avoid re-walking full history each cycle.
 - The raw HTTP Matrix path is retained as an explicit recovery mode, not the normal ingest path.
-- `POST /messages/send` performs direct sends for `source='telegram'` and `source='whatsapp'`.
-- Matrix send remains available when `LIFERADAR_MATRIX_ENABLED=true` and a valid Matrix session is present.
+- Signal is intentionally not implemented: this repository has no Signal connector path, and adding one would
+  require a new external sidecar or dependency. No placeholder or stub has been added.
 
 ## Phases
 

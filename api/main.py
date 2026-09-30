@@ -356,41 +356,6 @@ async def perform_matrix_password_login(body: MatrixLoginRequest) -> MatrixLogin
     )
 
 
-async def load_conversation_for_send(conversation_id: UUID) -> asyncpg.Record:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT id, source, external_id FROM life_radar.conversations WHERE id = $1",
-            conversation_id,
-        )
-    if not row:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    return row
-
-
-async def run_matrix_send(room_id: str, content_text: str) -> str:
-    try:
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            response = await client.post(
-                f"{MATRIX_BRIDGE_URL.rstrip('/')}/send",
-                json={"room_id": room_id, "content_text": content_text},
-            )
-    except httpx.ConnectError as exc:
-        raise HTTPException(status_code=503, detail="Matrix bridge is unavailable") from exc
-    except httpx.TimeoutException as exc:
-        raise HTTPException(status_code=504, detail="Matrix send timed out") from exc
-
-    if response.status_code >= 400:
-        detail = response.text[:400]
-        raise HTTPException(status_code=502, detail=detail or "matrix send failed")
-
-    payload = response.json()
-    event_id = payload.get("event_id")
-    if not event_id:
-        raise HTTPException(status_code=502, detail="Matrix bridge did not return an event_id")
-    return str(event_id)
-
-
 async def call_matrix_bridge(method: str, path: str, payload: Optional[dict] = None) -> dict:
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
@@ -534,23 +499,6 @@ async def call_chat_gateway(method: str, path: str, payload: Optional[dict] = No
     if not response.content:
         return {}
     return response.json()
-
-
-async def run_direct_connector_send(provider: str, external_id: str, content_text: str, conversation_id: UUID) -> str:
-    payload = await call_chat_gateway(
-        "POST",
-        "/internal/send",
-        {
-            "provider": provider,
-            "external_id": external_id,
-            "content_text": content_text,
-            "conversation_id": str(conversation_id),
-        },
-    )
-    message_id = payload.get("message_id")
-    if not message_id:
-        raise HTTPException(status_code=502, detail=f"{provider} gateway did not return a message_id")
-    return str(message_id)
 
 
 def _connector_auth_page(provider: str, api_key: str) -> str:
@@ -1960,42 +1908,14 @@ async def upsert_calendar_event(event: CalendarEventUpsert, request: Request):
 
 @app.post("/messages/send", response_model=MessageSendResponse)
 async def send_message(request: MessageSendRequest, http_request: Request):
-    """
-    Send a message via an active connector (user-approved only).
-    """
+    """Reject all outbound messages while LifeRadar operates in read-only mode."""
     require_api_key(http_request)
-    if not request.user_approved:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "Explicit user approval is required before sending a message. "
-                "Prompt the user for confirmation, then retry with user_approved=true "
-                "and an approval_note describing that approval."
-            ),
-        )
-    conversation = await load_conversation_for_send(request.conversation_id)
-
-    if conversation["source"] == "matrix":
-        if not is_matrix_enabled():
-            raise HTTPException(
-                status_code=501,
-                detail="Sending messages for source 'matrix' is disabled (LIFERADAR_MATRIX_ENABLED=false)",
-            )
-        message_id = await run_matrix_send(conversation["external_id"], request.content_text)
-        return MessageSendResponse(status="sent", message_id=message_id)
-
-    if conversation["source"] in {"telegram", "whatsapp"}:
-        message_id = await run_direct_connector_send(
-            conversation["source"],
-            conversation["external_id"],
-            request.content_text,
-            request.conversation_id,
-        )
-        return MessageSendResponse(status="sent", message_id=message_id)
-
     raise HTTPException(
-        status_code=501,
-        detail=f"Sending messages for source '{conversation['source']}' is not implemented",
+        status_code=403,
+        detail=(
+            "LifeRadar is read-only: outbound messages are disabled. "
+            "No message was sent."
+        ),
     )
 
 
