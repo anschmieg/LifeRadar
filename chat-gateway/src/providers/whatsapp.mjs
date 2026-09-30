@@ -6,12 +6,28 @@ import { BaseConnector } from './base.mjs';
 import { rejectOutboundMessage } from '../read-only.mjs';
 
 export class WhatsAppConnector extends BaseConnector {
-  constructor({ unofficialAllowed, ...opts }) {
+  constructor({ unofficialAllowed, hasSession, createSocket, schedule, random = Math.random, reconnectBaseMs = 1_000, reconnectMaxMs = 30_000, ...opts }) {
     super(opts);
     this.unofficialAllowed = unofficialAllowed;
     this.socket = null;
     this.accountId = this.defaultAccountId;
     this.qrState = null;
+    this.hasSession = hasSession || (() => this.#hasSession());
+    this.createSocket = createSocket;
+    this.schedule = schedule || ((fn, delay) => setTimeout(fn, delay));
+    this.random = random;
+    this.reconnectBaseMs = reconnectBaseMs;
+    this.reconnectMaxMs = reconnectMaxMs;
+    this.reconnectAttempt = 0;
+    this.reconnectTimer = null;
+    this.stopped = false;
+  }
+
+  async start() {
+    if (!this.unofficialAllowed || !(await this.hasSession())) return { provider: this.provider, status: 'no_session' };
+    this.stopped = false;
+    await this.#connectSocket();
+    return { provider: this.provider, status: 'connecting' };
   }
 
   async beginLogin() {
@@ -49,6 +65,9 @@ export class WhatsAppConnector extends BaseConnector {
       this.socket = null;
     }
     this.qrState = null;
+    this.stopped = true;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
     return super.logout({ account_id: accountId || this.accountId });
   }
 
@@ -63,18 +82,39 @@ export class WhatsAppConnector extends BaseConnector {
     return this.socket;
   }
 
+  async #hasSession() {
+    try {
+      const { access } = await import('node:fs/promises');
+      await access(path.join(this.sessionDir, 'auth', 'creds.json'));
+      return true;
+    } catch { return false; }
+  }
+
+  #scheduleReconnect() {
+    if (this.stopped || this.reconnectTimer) return;
+    const cap = Math.min(this.reconnectMaxMs, this.reconnectBaseMs * (2 ** this.reconnectAttempt++));
+    const delay = Math.round(cap * (0.5 + this.random()));
+    this.reconnectTimer = this.schedule(async () => {
+      this.reconnectTimer = null;
+      if (!this.stopped) {
+        try { await this.#connectSocket(); } catch (error) { this.logger.warn({ err: error }, 'WhatsApp reconnect failed'); this.#scheduleReconnect(); }
+      }
+    }, delay);
+  }
+
   async #connectSocket(attemptId = null) {
     if (this.socket) return this.socket;
-    const baileys = await import('@whiskeysockets/baileys');
-    const authDir = path.join(this.sessionDir, 'auth');
-    const { state, saveCreds } = await baileys.useMultiFileAuthState(authDir);
-    const socket = baileys.default({
-      auth: state,
-      printQRInTerminal: false,
-      browser: ['LifeRadar', 'Chrome', '1.0'],
-      syncFullHistory: true,
-      markOnlineOnConnect: false,
-    });
+    let socket;
+    let saveCreds = () => {};
+    if (this.createSocket) {
+      socket = await this.createSocket();
+    } else {
+      const baileys = await import('@whiskeysockets/baileys');
+      const authDir = path.join(this.sessionDir, 'auth');
+      const auth = await baileys.useMultiFileAuthState(authDir);
+      saveCreds = auth.saveCreds;
+      socket = baileys.default({ auth: auth.state, printQRInTerminal: false, browser: ['LifeRadar', 'Chrome', '1.0'], syncFullHistory: true, markOnlineOnConnect: false });
+    }
 
     socket.ev.on('creds.update', saveCreds);
     socket.ev.on('connection.update', async (update) => {
@@ -92,6 +132,7 @@ export class WhatsAppConnector extends BaseConnector {
       }
 
       if (update.connection === 'open') {
+        this.reconnectAttempt = 0;
         this.accountId = socket.user?.id || this.defaultAccountId;
         await this.db.upsertConnectorAccount({
           provider: this.provider,
@@ -118,19 +159,21 @@ export class WhatsAppConnector extends BaseConnector {
         }
       }
 
-      if (update.connection === 'close' && update.lastDisconnect?.error) {
+      if (update.connection === 'close') {
+        const disconnectError = update.lastDisconnect?.error;
         await this.db.upsertConnectorAccount({
           provider: this.provider,
           accountId: this.accountId,
           authState: 'error',
           enabled: true,
-          lastError: update.lastDisconnect.error.message || 'connection closed',
+          lastError: disconnectError?.message || 'connection closed',
           lastErrorAt: new Date(),
           metadata: {
-            disconnect_reason: update.lastDisconnect.error.output?.statusCode ?? null,
+            disconnect_reason: disconnectError?.output?.statusCode ?? null,
           },
         });
         this.socket = null;
+        this.#scheduleReconnect();
       }
     });
 
@@ -155,9 +198,11 @@ export class WhatsAppConnector extends BaseConnector {
       for (const message of messages) {
         await this.db.ingestWhatsAppMessage(this.accountId, message);
       }
+      const newest = messages.reduce((latest, message) => !latest || Number(message.messageTimestamp || 0) > Number(latest.messageTimestamp || 0) ? message : latest, null);
       await this.db.setCheckpoint(this.provider, this.accountId, 'history_sync', {
-        chats: chats.length,
-        messages: messages.length,
+        latest_message_id: newest?.key?.id || null,
+        latest_remote_jid: newest?.key?.remoteJid || null,
+        latest_timestamp: newest?.messageTimestamp ? Number(newest.messageTimestamp) : null,
         updated_at: new Date().toISOString(),
       });
     });

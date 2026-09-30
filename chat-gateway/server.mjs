@@ -134,6 +134,14 @@ app.post('/internal/send', async (req, res) => {
 });
 
 const port = Number.parseInt(process.env.LIFERADAR_CHAT_GATEWAY_PORT || '8020', 10);
-app.listen(port, () => {
+app.listen(port, async () => {
   logger.info({ port, connectors: Array.from(connectors.keys()) }, 'chat gateway listening');
+  for (const connector of connectors.values()) {
+    try {
+      const result = await connector.start();
+      logger.info({ provider: connector.provider, ...result }, 'connector startup recovery completed');
+    } catch (error) {
+      logger.error({ err: error, provider: connector.provider }, 'connector startup recovery failed');
+    }
+  }
 });

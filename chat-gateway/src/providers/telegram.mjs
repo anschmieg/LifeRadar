@@ -25,12 +25,27 @@ function toBase64Url(buffer) {
 }
 
 export class TelegramConnector extends BaseConnector {
-  constructor(opts) {
+  constructor({ readSession, createAuthorizedClient, newMessageEvent, ...opts }) {
     super(opts);
     this.client = null;
     this.sessionFile = path.join(this.sessionDir, 'gramjs.session');
     this.codeHints = new Map();
     this.qrClients = new Map();
+    this.readSession = readSession || (() => this.#readSession());
+    this.createAuthorizedClient = createAuthorizedClient || ((session) => this.#newAuthorizedClient(session));
+    this.newMessageEvent = newMessageEvent;
+  }
+
+  async start() {
+    const sessionValue = await this.readSession();
+    if (!sessionValue) return { provider: this.provider, status: 'no_session' };
+    const client = await this.#ensureAuthorizedClient();
+    const me = await client.getMe();
+    const accountId = String(me?.id ?? this.defaultAccountId);
+    await this.db.upsertConnectorAccount({ provider: this.provider, accountId, authState: 'connected', enabled: true, metadata: { restored_at: new Date().toISOString() } });
+    await this.#backfill(accountId, me);
+    await this.#startLiveUpdates(accountId, me);
+    return { provider: this.provider, status: 'connected', accountId };
   }
 
   async beginLogin(body = {}) {
@@ -258,23 +273,40 @@ export class TelegramConnector extends BaseConnector {
 
   async #ensureAuthorizedClient() {
     if (this.client) return this.client;
-    const sessionValue = await this.#readSession();
+    const sessionValue = await this.readSession();
     if (!sessionValue) {
       const error = new Error('Telegram is not logged in');
       error.statusCode = 409;
       throw error;
     }
 
+    this.client = await this.createAuthorizedClient(sessionValue);
+    if (typeof this.client.connect === 'function') await this.client.connect();
+    return this.client;
+  }
+
+  async #newAuthorizedClient(sessionValue) {
     const { TelegramClient } = await import('telegram');
     const { StringSession } = await import('telegram/sessions/index.js');
-    this.client = new TelegramClient(
-      new StringSession(sessionValue),
-      Number.parseInt(requireEnv('TELEGRAM_API_ID'), 10),
-      requireEnv('TELEGRAM_API_HASH'),
-      { connectionRetries: 5 }
-    );
-    await this.client.connect();
-    return this.client;
+    return new TelegramClient(new StringSession(sessionValue), Number.parseInt(requireEnv('TELEGRAM_API_ID'), 10), requireEnv('TELEGRAM_API_HASH'), { connectionRetries: 5 });
+  }
+
+  async #startLiveUpdates(accountId, me) {
+    const client = await this.#ensureAuthorizedClient();
+    let NewMessage = this.newMessageEvent;
+    if (!NewMessage) {
+      const events = await import('telegram/events/index.js');
+      NewMessage = new events.NewMessage({});
+    }
+    client.addEventHandler(async (event) => {
+      const message = event.message;
+      const peerId = message?.peerId?.channelId || message?.peerId?.chatId || message?.peerId?.userId;
+      if (!message?.id || peerId == null) return;
+      const dialog = { id: String(peerId), entity: {}, title: String(peerId) };
+      await this.db.ingestTelegramMessage(accountId, dialog, message, me?.id);
+      await this.db.setCheckpoint(this.provider, accountId, 'live_cursor', { message_id: message.id, peer_id: String(peerId) });
+      await this.db.upsertConnectorAccount({ provider: this.provider, accountId, authState: 'connected', enabled: true, lastSyncedAt: new Date(), metadata: { live_update_at: new Date().toISOString() } });
+    }, NewMessage);
   }
 
   async #finishAuthorization(user, attemptId) {
@@ -300,28 +332,33 @@ export class TelegramConnector extends BaseConnector {
     this.codeHints.delete(attemptId);
   }
 
-  async #backfill(accountId) {
+  async #backfill(accountId, me = null) {
     const client = await this.#ensureAuthorizedClient();
-    const me = await client.getMe();
+    me ||= await client.getMe();
     const limitPerChat = Number.parseInt(process.env.LIFERADAR_CONNECTOR_BACKFILL_LIMIT_PER_CHAT || '2000', 10);
     const dialogs = await client.getDialogs({ limit: 100 });
 
     for (const dialog of dialogs) {
+      const checkpoint = await this.db.getCheckpoint?.(this.provider, accountId, `dialog:${dialog.id}`);
+      const minId = Number(checkpoint?.message_id || 0);
       let remaining = limitPerChat;
       let offsetId = 0;
+      let newestId = minId;
       while (remaining > 0) {
         const pageSize = Math.min(remaining, 100);
-        const messages = await client.getMessages(dialog.entity, { limit: pageSize, offsetId });
+        const messages = await client.getMessages(dialog.entity, { limit: pageSize, offsetId, minId });
         if (!messages?.length) break;
         for (const message of messages.reverse()) {
           await this.db.ingestTelegramMessage(accountId, dialog, message, me?.id);
-          offsetId = Math.max(offsetId, message.id);
+          newestId = Math.max(newestId, message.id);
         }
         remaining -= messages.length;
+        offsetId = Math.min(...messages.map((message) => message.id));
         if (messages.length < pageSize) break;
       }
       await this.db.setCheckpoint(this.provider, accountId, `dialog:${dialog.id}`, {
-        imported_message_limit: limitPerChat - remaining,
+        message_id: newestId,
+        dialog_id: String(dialog.id),
         updated_at: new Date().toISOString(),
       });
     }
