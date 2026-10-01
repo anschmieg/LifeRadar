@@ -5,6 +5,7 @@ import { GatewayDb } from './src/db.mjs';
 import { TelegramConnector } from './src/providers/telegram.mjs';
 import { WhatsAppConnector } from './src/providers/whatsapp.mjs';
 import { SignalConnector } from './src/providers/signal.mjs';
+import { createSignalProxy } from './src/signal-proxy.mjs';
 import { rejectOutboundMessage } from './src/read-only.mjs';
 
 const logger = pino({ name: 'liferadar-chat-gateway' });
@@ -14,6 +15,7 @@ app.use((req, _res, next) => { logger.info({ method: req.method, path: req.path 
 
 const db = new GatewayDb({ logger });
 const connectors = new Map();
+let signalProxy = null;
 
 function boolEnv(name, fallback = false) {
   const raw = process.env[name];
@@ -46,11 +48,20 @@ function registerConnectors() {
   }
 
   if (boolEnv('LIFERADAR_SIGNAL_ENABLED', false)) {
+    // Deny-by-default loopback proxy in front of the sidecar. The sidecar has
+    // no auth of its own, so ALL signal traffic (including the receive
+    // websocket) flows through this allowlist proxy; it binds 127.0.0.1 only
+    // and is never routed through Traefik. See docs/signal-connector.md.
+    const upstreamUrl = process.env.LIFERADAR_SIGNAL_SIDECAR_URL || 'http://127.0.0.1:8080';
+    const proxyPort = Number.parseInt(process.env.LIFERADAR_SIGNAL_PROXY_PORT || '8099', 10);
+    signalProxy = createSignalProxy({ upstreamUrl, host: '127.0.0.1', port: proxyPort, logger: logger.child({ component: 'signal-proxy' }) });
     connectors.set('signal', new SignalConnector({
       db,
       logger,
       provider: 'signal',
       sessionDir: `${sessionDir()}/signal`,
+      sidecarUrl: `http://127.0.0.1:${proxyPort}`,
+      deviceName: process.env.LIFERADAR_SIGNAL_DEVICE_NAME || 'liferadar',
     }));
   }
 }
@@ -152,6 +163,15 @@ app.post('/internal/send', async (req, res) => {
 const port = Number.parseInt(process.env.LIFERADAR_CHAT_GATEWAY_PORT || '8020', 10);
 app.listen(port, async () => {
   logger.info({ port, connectors: Array.from(connectors.keys()) }, 'chat gateway listening');
+  if (signalProxy) {
+    try {
+      const address = await signalProxy.listen();
+      logger.info({ host: address.host, port: address.port }, 'signal allowlist proxy listening on loopback');
+      signalProxy.server.on('error', (error) => logger.error({ err: error }, 'signal allowlist proxy error'));
+    } catch (error) {
+      logger.error({ err: error }, 'signal allowlist proxy failed to listen; signal connector will retry via reconnect loop');
+    }
+  }
   for (const connector of connectors.values()) {
     try {
       const result = await connector.start();

@@ -80,4 +80,36 @@ export class GatewayDb {
   }
   async ingestWhatsAppChat(accountId, chat) { if (!chat?.id) return null; return this.upsertConversation({ source: 'whatsapp', externalId: String(chat.id), accountId, title: chat.name || chat.pushName || String(chat.id), participants: [], lastEventAt: chat.conversationTimestamp ? new Date(chat.conversationTimestamp * 1000) : null, metadata: { provider: 'whatsapp', jid: String(chat.id), archived: !!chat.archived, unread_count: chat.unreadCount ?? 0 } }); }
   async ingestWhatsAppMessage(accountId, message, { conversationTitle = null } = {}) { const key = message?.key; if (!key?.id || !key?.remoteJid) return; const occurredAt = message.messageTimestamp ? new Date(Number(message.messageTimestamp) * 1000) : new Date(); const conversationId = await this.upsertConversation({ source: 'whatsapp', externalId: String(key.remoteJid), accountId, title: conversationTitle || String(key.remoteJid), participants: [], lastEventAt: occurredAt, metadata: { provider: 'whatsapp', jid: String(key.remoteJid) } }); await this.upsertMessage({ conversationId, source: 'whatsapp', externalId: `${key.remoteJid}:${key.id}`, senderId: key.participant || key.remoteJid, occurredAt, contentText: pickText(message.message), contentJson: json(message.message), isInbound: !key.fromMe, provenance: { provider: 'whatsapp', account_id: accountId, remote_jid: key.remoteJid } }); }
+  async ingestSignalMessage(accountId, event) {
+    if (!event?.conversationId || !event?.messageId) return null;
+    const externalMessageId = `${event.conversationId}:${event.messageId}`;
+    const parsedAt = event.occurredAt == null ? NaN : Number(event.occurredAt);
+    const occurredAt = Number.isFinite(parsedAt) ? new Date(parsedAt) : new Date();
+    const conversationId = await this.upsertConversation({
+      source: 'signal',
+      externalId: event.conversationId,
+      accountId,
+      title: event.conversationTitle || event.conversationId,
+      participants: [],
+      lastEventAt: occurredAt,
+      metadata: {
+        provider: 'signal',
+        signal_account: accountId,
+        conversation_kind: String(event.conversationId).startsWith('group:') ? 'group' : 'direct',
+      },
+    });
+    await this.upsertMessage({
+      conversationId,
+      source: 'signal',
+      externalId: externalMessageId,
+      senderId: event.senderId ? String(event.senderId) : null,
+      senderLabel: event.senderLabel || null,
+      occurredAt,
+      contentText: event.text || null,
+      contentJson: { text: event.text || null, has_attachment: !!event.hasAttachment, expires_in_seconds: event.expiresInSeconds ?? 0, is_own: !!event.isOwn },
+      isInbound: event.isInbound !== false,
+      provenance: { provider: 'signal', account_id: accountId, message_id: String(event.messageId) },
+    });
+    return { conversationId, externalId: externalMessageId };
+  }
 }

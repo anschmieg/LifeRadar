@@ -152,6 +152,9 @@ services:
       TELEGRAM_API_HASH: "${TELEGRAM_API_HASH}"
       LIFERADAR_CONNECTOR_BACKFILL_LIMIT_PER_CHAT: "${LIFERADAR_CONNECTOR_BACKFILL_LIMIT_PER_CHAT}"
       LIFERADAR_SIGNAL_ENABLED: "${LIFERADAR_SIGNAL_ENABLED:-false}"
+      LIFERADAR_SIGNAL_SIDECAR_URL: "${LIFERADAR_SIGNAL_SIDECAR_URL:-http://liferadar-signal-api:8080}"
+      LIFERADAR_SIGNAL_PROXY_PORT: "${LIFERADAR_SIGNAL_PROXY_PORT:-8099}"
+      LIFERADAR_SIGNAL_DEVICE_NAME: "${LIFERADAR_SIGNAL_DEVICE_NAME:-liferadar}"
     volumes:
       - ${LIFERADAR_DATA_ROOT:-/data/liferadar}/connectors:/app/connectors
     expose:
@@ -160,6 +163,7 @@ services:
       - "host.docker.internal:host-gateway"
     networks:
       - coolify
+      - liferadar-signal-backend
     restart: unless-stopped
     healthcheck:
       test:
@@ -204,7 +208,72 @@ services:
       retries: 5
       start_period: 20s
 
+  # Creates the sole Signal persistent-state directory before the unprivileged
+  # sidecar starts. It has no network and exits after setting owner-only 0700.
+  liferadar-signal-state-init:
+    image: busybox:1.37.0
+    container_name: liferadar-signal-state-init
+    profiles: ["signal"]
+    network_mode: "none"
+    volumes:
+      - ${LIFERADAR_DATA_ROOT:-/data/liferadar}/connectors/signal:/signal-state
+    command: ["sh", "-ec", "mkdir -p /signal-state && chown 1000:1000 /signal-state && chmod 700 /signal-state"]
+    restart: "no"
+
+  liferadar-signal-api:
+    # signal-cli-rest-api sidecar backing the read-only Signal connector.
+    #   * profile "signal": starts only on explicit opt-in
+    #     (`COMPOSE_PROFILES=signal docker compose up -d`). Default `docker
+    #     compose up` never pulls or runs it.
+    #   * NO ports/published exposure and NO Traefik labels. It has no direct
+    #     connection to the shared `coolify` network; only the gateway and the
+    #     sidecar join the private `liferadar-signal-backend` network.
+    #     A separate egress network lets only this sidecar reach Signal.
+    #     The gateway's deny-by-default loopback proxy is the only caller.
+    #   * The image has NO authentication and NO read-only mode, so it is
+    #     never placed on a shared/public network segment.
+    #   * Session keys persist under the existing durable
+    #     <DATA_ROOT>/connectors bind mount (nested signal-cli config dir),
+    #     surviving restarts and redeploys.
+    image: bbernhard/signal-cli-rest-api:0.101
+    container_name: liferadar-signal-api
+    profiles: ["signal"]
+    # The image runs s6-overlay under USER signal-api (uid 1000); pinning the
+    # same uid here keeps the nested bind-mount owner deterministic so the
+    # operator can `chmod 700` it on the host and still have the sidecar write
+    # its session keys.
+    user: "1000:1000"
+    environment:
+      MODE: json-rpc
+      PORT: "8080"
+      SIGNAL_CLI_CONFIG_DIR: /app/connectors/signal
+      LOG_LEVEL: "${LIFERADAR_SIGNAL_LOG_LEVEL:-info}"
+    volumes:
+      # Sole Signal state mount, placed exactly at the requested path.
+      - ${LIFERADAR_DATA_ROOT:-/data/liferadar}/connectors/signal:/app/connectors/signal
+    depends_on:
+      liferadar-signal-state-init:
+        condition: service_completed_successfully
+    expose:
+      - "8080"
+    networks:
+      - liferadar-signal-backend
+      - liferadar-signal-egress
+    restart: unless-stopped
+
 networks:
   coolify:
     external: true
     name: coolify
+  # Private gateway-to-sidecar link. The gateway has a separate coolify
+  # interface; no other Coolify workload can reach this unauthenticated API.
+  liferadar-signal-backend:
+    internal: true
+    name: liferadar-signal-backend
+  # The sidecar needs outbound Signal connectivity. Only the sidecar joins this
+  # network; its API port remains unexposed here.
+  liferadar-signal-egress:
+    name: liferadar-signal-egress
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "true"

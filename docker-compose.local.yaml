@@ -50,7 +50,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.chat-gateway
-    profiles: ["extras"]
+    profiles: ["extras", "signal"]
     environment:
       LIFERADAR_DB_HOST: liferadar-db
       LIFERADAR_DB_PORT: 5432
@@ -65,6 +65,10 @@ services:
       TELEGRAM_API_ID: "${TELEGRAM_API_ID:-}"
       TELEGRAM_API_HASH: "${TELEGRAM_API_HASH:-}"
       LIFERADAR_CONNECTOR_BACKFILL_LIMIT_PER_CHAT: "${LIFERADAR_CONNECTOR_BACKFILL_LIMIT_PER_CHAT:-2000}"
+      LIFERADAR_SIGNAL_ENABLED: "${LIFERADAR_SIGNAL_ENABLED:-false}"
+      LIFERADAR_SIGNAL_SIDECAR_URL: "${LIFERADAR_SIGNAL_SIDECAR_URL:-http://liferadar-signal-api:8080}"
+      LIFERADAR_SIGNAL_PROXY_PORT: "${LIFERADAR_SIGNAL_PROXY_PORT:-8099}"
+      LIFERADAR_SIGNAL_DEVICE_NAME: "${LIFERADAR_SIGNAL_DEVICE_NAME:-liferadar}"
     depends_on:
       liferadar-db:
         condition: service_healthy
@@ -72,7 +76,47 @@ services:
       - "${LIFERADAR_CHAT_GATEWAY_PORT_PUBLIC:-18020}:8020"
     volumes:
       - ./data/connectors:/app/connectors
+    networks:
+      - default
+      - liferadar-signal-backend
     restart: unless-stopped
+
+  # Creates the sole Signal persistent-state directory before the unprivileged
+  # sidecar starts. It has no network and exits after setting owner-only 0700.
+  liferadar-signal-state-init:
+    image: busybox:1.37.0
+    profiles: ["extras", "signal"]
+    network_mode: "none"
+    volumes:
+      - ./data/connectors/signal:/signal-state
+    command: ["sh", "-ec", "mkdir -p /signal-state && chown 1000:1000 /signal-state && chmod 700 /signal-state"]
+    restart: "no"
+
+  liferadar-signal-api:
+    # Local-only signal-cli-rest-api sidecar. No host ports or Traefik labels;
+    # its API is accessible only on the private backend network. It also joins
+    # an egress network to reach Signal; only this sidecar is attached there.
+    image: bbernhard/signal-cli-rest-api:0.101
+    profiles: ["extras", "signal"]
+    user: "1000:1000"
+    environment:
+      MODE: json-rpc
+      PORT: "8080"
+      SIGNAL_CLI_CONFIG_DIR: /app/connectors/signal
+      LOG_LEVEL: "${LIFERADAR_SIGNAL_LOG_LEVEL:-info}"
+    volumes:
+      # Sole Signal state mount, placed exactly at the requested path.
+      - ./data/connectors/signal:/app/connectors/signal
+    depends_on:
+      liferadar-signal-state-init:
+        condition: service_completed_successfully
+    expose:
+      - "8080"
+    networks:
+      - liferadar-signal-backend
+      - liferadar-signal-egress
+    restart: unless-stopped
+    # Inherit upstream's curl-based healthcheck (/v1/health returns 204).
 
   liferadar-matrix-bridge:
     build:
@@ -176,3 +220,14 @@ services:
     volumes:
       - ./data/outlook-token-cache:/app/outlook-token-cache
     restart: unless-stopped
+
+networks:
+  # Private gateway-to-sidecar link; the unauthenticated raw Signal API has no
+  # host port and cannot be reached from any other local compose service.
+  liferadar-signal-backend:
+    internal: true
+  # Only the sidecar joins this egress network to reach Signal's servers.
+  liferadar-signal-egress:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "true"

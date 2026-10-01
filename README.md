@@ -55,8 +55,11 @@ docker compose logs -f worker
 - Matrix sync now persists a global `matrix_sync_checkpoint` plus per-conversation
   `matrix_room_checkpoint` metadata to avoid re-walking full history each cycle.
 - The raw HTTP Matrix path is retained as an explicit recovery mode, not the normal ingest path.
-- Signal is intentionally not implemented: this repository has no Signal connector path, and adding one would
-  require a new external sidecar or dependency. No placeholder or stub has been added.
+- Signal is implemented as a read-only linked device through the
+  `signal-cli-rest-api` sidecar plus the gateway's deny-by-default loopback
+  proxy. It is OFF by default (`LIFERADAR_SIGNAL_ENABLED=false`) and the
+  sidecar only starts under the `signal` compose profile. It has no send path
+  (delivery receipts only; read receipts disabled). See `docs/signal-connector.md`.
 
 ## Phases
 

@@ -1,229 +1,375 @@
-import { readFile, access } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import QRCode from 'qrcode';
 
 import { BaseConnector } from './base.mjs';
 import { rejectOutboundMessage } from '../read-only.mjs';
+import { SignalSidecarClient } from '../signal-client.mjs';
 
-// LifeRadar Signal connector - STRICTLY READ-ONLY.
+// Real Signal LINKED-DEVICE connector (signal-cli-rest-api sidecar).
 //
-// This connector drives a THIN LOCAL-ONLY socket wrapper exposed via the
-// `createSignalClient` seam. The wrapper has read + teardown surfaces and
-// nothing else: no outbound send, no presence/typing, no read receipts, no
-// reactions, and no remote logout/unpair. logout() closes the local socket
-// (end()-equivalent) only; it never instructs the remote device to drop the
-// pairing. There is deliberately no real signal-cli REST send path wired in.
+// Security model (details in docs/signal-connector.md):
+//   * Pairing: GET /v1/qrcodelink/raw -> in-memory attempt only. The device
+//     link URI / QR is never written to logs or Postgres; attempts live in
+//     this process's memory and the completed attempt clears qr_text/qr_svg.
+//   * Session: only the paired account id + pairing timestamp are persisted,
+//     in signal.session inside the connector session dir (the gateway view of
+//     the nested /home/.local/share/signal-cli bind mount). Keys live in the
+//     sidecar's own store inside that same directory tree.
+//   * Receive: json-rpc websocket stream through the allowlist proxy. Only
+//     inbound events are handled. Receipt policy: signal-cli's DEFAULT
+//     delivery receipts are accepted; read receipts are NEVER requested
+//     (no send_read_receipts, no /v1/receipts, no receipt methods here).
+//   * Outbound: sendMessage() throws read-only; this class deliberately has
+//     no send/reaction/typing/presence/receipt method at all.
 
-const DEFAULT_ACCOUNT_ID = 'default';
+const QR_REFRESH_MS = 60_000;
+const SESSION_FILE = 'signal.session';
+const LOGIN_PROMPT = 'Scan this QR code with Signal on your phone: Settings → Linked devices → Link a device.';
+
+function toSafeDate(value) {
+  const date = value == null ? new Date() : new Date(Number(value));
+  return Number.isNaN(date.getTime()) ? new Date() : date;
+}
 
 export class SignalConnector extends BaseConnector {
   constructor({
     db,
     logger,
-    provider,
+    provider = 'signal',
     sessionDir,
     hasSession = null,
     createSignalClient = null,
+    createSignalApi = null,
+    sidecarUrl = null,
+    deviceName = 'liferadar',
+    fetchImpl = null,
     schedule = null,
     random = Math.random,
     reconnectBaseMs = 1000,
     reconnectMaxMs = 30000,
-    ...opts
-  }) {
-    super({ db, logger, provider, sessionDir, ...opts });
-    this.sessionFile = path.join(sessionDir, 'signal.session');
-    this.hasSession = hasSession || (() => this.#hasSession());
-    this.createSignalClient = createSignalClient || (() => this.#buildLocalWrapper());
-    this.schedule = schedule || ((fn, delay) => setTimeout(fn, delay));
+  } = {}) {
+    super({ db, logger, provider, sessionDir });
+    this.hasSessionFn = hasSession;
+    this.createSignalClient = createSignalClient;
+    this.createSignalApi = createSignalApi;
+    this.sidecarUrl = sidecarUrl;
+    this.deviceName = deviceName;
+    this.fetchImpl = fetchImpl;
+    this.schedule = schedule ?? ((fn, ms) => { const timer = setTimeout(fn, ms); timer.unref?.(); return timer; });
     this.random = random;
     this.reconnectBaseMs = reconnectBaseMs;
     this.reconnectMaxMs = reconnectMaxMs;
-    this.accountId = DEFAULT_ACCOUNT_ID;
+
     this.client = null;
+    this.apiInstance = null;
+    this.liveAccount = null;
     this.stopped = false;
-    this.reconnectAttempt = 0;
+    this.reconnectAttempts = 0;
     this.reconnectTimer = null;
-    this.connecting = null;
   }
+
+  // ---------------------------------------------------------------- plumbing
+
+  #api() {
+    if (this.apiInstance) return this.apiInstance;
+    if (this.createSignalApi) {
+      this.apiInstance = this.createSignalApi();
+      return this.apiInstance;
+    }
+    if (!this.sidecarUrl) throw new Error('signal sidecar url is not configured');
+    this.apiInstance = new SignalSidecarClient({ baseUrl: this.sidecarUrl, fetchImpl: this.fetchImpl ?? undefined, logger: this.logger });
+    return this.apiInstance;
+  }
+
+  #sessionPath() {
+    return path.join(this.sessionDir, SESSION_FILE);
+  }
+
+  async #readSession() {
+    try {
+      const raw = await readFile(this.#sessionPath(), 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.account === 'string' && parsed.account) return parsed;
+      return null;
+    } catch (error) {
+      if (error.code === 'ENOENT') return null;
+      this.logger.warn({ err: { name: error.name, message: 'unreadable signal session file' } }, 'signal session unreadable');
+      return null;
+    }
+  }
+
+  async #writeSession(account) {
+    await writeFile(this.#sessionPath(), `${JSON.stringify({ account, paired_at: new Date().toISOString() })}\n`, { mode: 0o600 });
+  }
+
+  async #upsertAccount(accountId, { authState, lastSyncedAt = undefined, lastError = undefined, lastErrorAt = undefined, metadata = {} } = {}) {
+    await this.db.upsertConnectorAccount({
+      provider: this.provider,
+      accountId,
+      authState,
+      enabled: true,
+      lastSyncedAt,
+      lastError,
+      lastErrorAt,
+      metadata: {
+        read_only: true,
+        receipt_policy: { delivery: 'accepted', read: 'disabled' },
+        ...metadata,
+      },
+    });
+  }
+
+  // ----------------------------------------------------------------- start
 
   async start() {
     await this.ensureDirectories();
-    if (!(await this.hasSession())) {
-      await this.db.upsertConnectorAccount({
-        provider: this.provider, accountId: this.accountId, authState: 'logged_out',
-        enabled: false, lastSyncedAt: null, metadata: { status: 'no_session' },
-      });
-      return { provider: this.provider, status: 'no_session' };
-    }
     this.stopped = false;
-    await this.db.upsertConnectorAccount({
-      provider: this.provider, accountId: this.accountId, authState: 'connected',
-      enabled: true, lastSyncedAt: new Date(),
-      metadata: { paired_at: new Date().toISOString() },
-    });
-    await this.#connectLocal();
-    await this.#backfill();
-    return { provider: this.provider, status: 'connected', accountId: this.accountId };
-  }
-
-  async beginLogin() {
-    await this.ensureDirectories();
-    const attempt = this.createAttempt({
-      state: 'initializing',
-      prompt: 'Pairing a new Signal device. This connector is read-only: it registers a local session only.',
-      fields: [],
-      metadata: { read_only: true },
-    });
-    return this.getLoginAttempt(attempt.attempt_id);
-  }
-
-  async submitLoginStep(attemptId) {
-    return this.getLoginAttempt(attemptId);
-  }
-
-  async sendMessage() {
-    throw rejectOutboundMessage();
-  }
-
-  // Local-only teardown. We close the local socket wrapper (end()-equivalent)
-  // and never instruct the remote device to drop its pairing. There is no
-  // signal-cli unregister / unpair / remote logout call anywhere in this
-  // connector: the read-only policy forbids it and the local wrapper has no
-  // such surface.
-  async logout({ account_id: accountId } = {}) {
-    if (this.client) {
-      try {
-        await this.client.end();
-      } catch {
-        // ignore teardown errors; local state below is authoritative
-      }
-      this.client = null;
+    if (this.hasSessionFn && !(await this.hasSessionFn())) {
+      await this.#upsertAccount(this.defaultAccountId, { authState: 'no_session', metadata: { status: 'no_session' } });
+      return { status: 'no_session', provider: this.provider };
     }
-    this.stopped = true;
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    this.reconnectTimer = null;
-    return super.logout({ account_id: accountId || this.accountId });
-  }
-
-  async #connectLocal() {
-    if (this.client) return this.client;
-    if (this.connecting) return this.connecting;
-    this.connecting = this.#buildLocal();
+    const session = await this.#readSession();
+    if (!session) {
+      await this.#upsertAccount(this.defaultAccountId, { authState: 'no_session', metadata: { status: 'no_session' } });
+      return { status: 'no_session', provider: this.provider };
+    }
+    this.liveAccount = session.account;
+    await this.#upsertAccount(session.account, {
+      authState: 'connected',
+      lastSyncedAt: new Date(),
+      metadata: { status: 'connected', paired_at: session.paired_at ?? null },
+    });
     try {
-      return await this.connecting;
-    } finally {
-      this.connecting = null;
+      await this.#connectLive(session.account);
+      return { status: 'connected', provider: this.provider, account_id: session.account };
+    } catch (error) {
+      this.logger.warn({ err: error }, 'signal receive attach failed; scheduling reconnect');
+      this.#scheduleReconnect(session.account);
+      return { status: 'degraded', provider: this.provider, account_id: session.account };
     }
   }
 
-  async #buildLocal() {
-    const client = await this.createSignalClient();
-    // Attach the live inbound event surface (read-only ingestion only).
-    client.ev?.on?.('message', (payload) => {
-      this.#handleLiveMessage(payload).catch((error) => {
-        this.logger.warn({ err: error }, 'Signal live handler contained error');
-      });
-    });
-    client.ev?.on?.('connection.close', () => {
-      this.client = null;
-      if (!this.stopped) this.#scheduleReconnect();
-    });
+  // -------------------------------------------------------- live connection
+
+  #buildLiveClient(account) {
+    const api = this.#api();
+    const stream = api.openReceiveStream(account);
+    stream.events.on('error', (error) => this.logger.warn({ err: error }, 'signal receive stream error'));
+    return {
+      ev: {
+        on(name, listener) {
+          if (name === 'message') stream.events.on('event', listener);
+          else if (name === 'connection.close') stream.events.on('close', listener);
+        },
+      },
+      end: async () => { stream.close(); },
+    };
+  }
+
+  async #connectLive(account) {
+    if (this.client) return this.client;
+    const client = this.createSignalClient ? await this.createSignalClient(account) : this.#buildLiveClient(account);
+    client.ev.on('message', (event) => { this.#handleLiveEvent(account, event); });
+    client.ev.on('connection.close', () => { this.#handleDisconnect(account); });
     this.client = client;
     return client;
   }
 
-  #scheduleReconnect() {
-    if (this.stopped || this.reconnectTimer || this.connecting) return;
-    const cap = Math.min(this.reconnectMaxMs, this.reconnectBaseMs * (2 ** this.reconnectAttempt++));
-    const delay = Math.round(cap * (0.5 + this.random()));
+  async #stopLive() {
+    if (!this.client) return;
+    const client = this.client;
+    this.client = null;
+    try {
+      await client.end?.();
+    } catch (error) {
+      this.logger.warn({ err: { name: error.name } }, 'signal stream close failed');
+    }
+  }
+
+  #handleDisconnect(account) {
+    if (this.client) {
+      const client = this.client;
+      this.client = null;
+      Promise.resolve(client.end?.()).catch(() => {});
+    }
+    if (this.stopped) return;
+    this.logger.warn('signal receive stream closed; scheduling reconnect');
+    this.#scheduleReconnect(account);
+  }
+
+  #scheduleReconnect(account) {
+    if (this.stopped || this.reconnectTimer) return; // single-flight
+    const attempt = ++this.reconnectAttempts;
+    const ceiling = Math.min(this.reconnectMaxMs, this.reconnectBaseMs * 2 ** Math.min(attempt - 1, 16));
+    const delay = Math.max(1, Math.round(ceiling * (0.5 + this.random())));
     this.reconnectTimer = this.schedule(async () => {
       this.reconnectTimer = null;
       if (this.stopped) return;
       try {
-        await this.#connectLocal();
+        const session = await this.#readSession();
+        if (!session) return; // logged out while waiting
+        await this.#connectLive(session.account);
+        this.reconnectAttempts = 0;
+        this.logger.info({ attempt }, 'signal receive stream reconnected');
       } catch (error) {
-        this.logger.warn({ err: error }, 'Signal reconnect failed');
-      } finally {
-        if (!this.stopped && !this.client) this.#scheduleReconnect();
+        this.logger.warn({ err: error, attempt }, 'signal receive reconnect failed');
+        this.#scheduleReconnect(account);
       }
     }, delay);
   }
 
-  async #handleLiveMessage(payload) {
+  async #handleLiveEvent(account, event) {
+    if (!event || typeof event !== 'object') return;
+    if (event.kind === 'receipt') {
+      // Delivery receipts (and any inbound read receipt) are accepted per
+      // operator policy: acknowledged locally, never answered, never persisted.
+      this.logger.debug({ receipt_type: event.receiptType ?? null }, 'signal receipt accepted without response');
+      return;
+    }
+    if (event.kind !== 'message') {
+      this.logger.debug({ kind: event.kind }, 'signal event ignored');
+      return;
+    }
     try {
-      const message = payload?.message || payload || {};
-      if (!message.message_id && !message.id) return;
-      await this.db.ingestSignalMessage(this.accountId, message);
-      const conversation = message.remoteConversation || 'inbox';
-      await this.db.setCheckpoint(this.provider, this.accountId, "dialog:" + conversation, {
-        message_id: Number(message.message_id || message.id || 0),
-        updated_at: new Date().toISOString(),
-      });
-      await this.db.upsertConnectorAccount({
-        provider: this.provider, accountId: this.accountId, authState: 'connected',
-        enabled: true, lastSyncedAt: new Date(),
-        metadata: { last_live_at: new Date().toISOString() },
+      const row = await this.db.ingestSignalMessage(account, event);
+      if (row?.conversationId) {
+        await this.db.setCheckpoint('signal', account, `dialog:${event.conversationId}`, {
+          message_id: row.externalId,
+          updated_at: toSafeDate(event.occurredAt).toISOString(),
+        });
+      }
+      await this.#upsertAccount(account, {
+        authState: 'connected',
+        lastSyncedAt: new Date(),
+        metadata: { status: 'connected', last_live_at: new Date().toISOString() },
       });
     } catch (error) {
-      // The checkpoint only advances after the ingest succeeded.
-      this.logger.error({ err: error }, 'Signal live ingest failed; checkpoint unchanged');
+      // No checkpoint on failure: the cursor only advances after a successful write.
+      this.logger.error({ err: error }, 'signal live ingestion failed');
     }
   }
 
-  async #hasSession() {
+  // --------------------------------------------------------------- pairing
+
+  async #issueQr(attemptId) {
+    const uri = await this.#api().getDeviceLinkUri(this.deviceName);
+    const qrSvg = await QRCode.toString(uri, { type: 'svg', margin: 1 });
+    return this.updateAttempt(attemptId, {
+      state: 'awaiting_qr_scan',
+      prompt: LOGIN_PROMPT,
+      fields: [],
+      qr_text: uri,
+      qr_svg: qrSvg,
+      error: null,
+      metadata: {
+        ...(this.attempts.get(attemptId)?.metadata || {}),
+        mode: 'qr',
+        qr_supported: true,
+        qr_generated_at: Date.now(),
+      },
+    });
+  }
+
+  async beginLogin(fields = {}) {
+    const attempt = this.createAttempt({
+      state: 'initializing',
+      prompt: LOGIN_PROMPT,
+      metadata: { mode: 'qr', read_only: true },
+    });
     try {
-      await access(this.sessionFile);
-      return true;
-    } catch {
-      return false;
+      await this.ensureDirectories();
+      await this.#issueQr(attempt.attempt_id);
+    } catch (error) {
+      this.logger.warn({ err: { name: error.name, message: error.message, status: error.statusCode ?? null } }, 'signal pairing QR creation failed');
+      return this.updateAttempt(attempt.attempt_id, {
+        state: 'error',
+        error: 'Signal pairing service is unavailable. It may not be running yet.',
+      });
     }
+    return this.attempts.get(attempt.attempt_id);
   }
 
-  // The default local-only wrapper: an in-process sandbox sink that can only
-  // be closed. It has no network identity and no outbound capability. If a
-  // real signal-cli-backed client is injected via the seam it is still used
-  // strictly for the read/listen/close surfaces above.
-  #buildLocalWrapper() {
-    const listeners = new Map();
-    return {
-      ev: { on(name, fn) { listeners.set(name, fn); } },
-      listeners,
-      on(name, fn) { listeners.set(name, fn); },
-      async listConversations() { return []; },
-      async listMessages() { return []; },
-      user: null,
-      async end() { listeners.clear(); },
-    };
-  }
+  async submitLoginStep(attemptId) {
+    const attempt = await this.getLoginAttempt(attemptId);
+    if (attempt.state === 'completed') return attempt;
 
-  // Durable per-page backfill: iterate every conversation, page through its
-  // messages, ingest each page, then persist a per-dialog high-water
-  // checkpoint AFTER the page ingested. A crash mid-loop therefore resumes
-  // from the last persisted page and never replays the start of the dialog.
-  async #backfill() {
-    const conversations = (await this.client?.listConversations?.()) || [];
-    for (const conversation of conversations) {
-      const externalId = String(conversation.id ?? conversation.externalId ?? '');
-      if (!externalId) continue;
-      const key = 'dialog:' + externalId;
-      const prev = await this.db.getCheckpoint(this.provider, this.accountId, key);
-      const minMessageId = Number(prev?.message_id || 0);
-      let pageMinId = minMessageId;
-      let highWater = minMessageId;
-      let stop = false;
-      while (!stop) {
-        const messages = (await this.client?.listMessages?.(conversation, { minTimestamp: pageMinId })) || [];
-        for (const message of messages) {
-          const messageId = Number(message.id ?? message.message_id ?? message.timestamp ?? 0);
-          if (messageId > highWater) highWater = messageId;
-          await this.db.ingestSignalMessage(this.accountId, conversation, message);
+    let accounts;
+    try {
+      accounts = await this.#api().getAccounts();
+    } catch (error) {
+      this.logger.warn({ err: { name: error.name, status: error.statusCode ?? null }, attempt_id: attemptId }, 'signal pairing poll failed');
+      if (attempt.state === 'error') {
+        try {
+          return await this.#issueQr(attemptId);
+        } catch {
+          return attempt;
         }
-        await this.db.setCheckpoint(this.provider, this.accountId, key, {
-          message_id: highWater,
-          dialog_id: externalId,
-          updated_at: new Date().toISOString(),
-        });
-        if (messages.length === 0) stop = true;
+      }
+      return attempt;
+    }
+
+    if (accounts.length > 0) {
+      const account = accounts[0];
+      const pairedAt = new Date().toISOString();
+      await this.#writeSession(account);
+      this.liveAccount = account;
+      await this.#upsertAccount(account, {
+        authState: 'connected',
+        lastSyncedAt: new Date(),
+        metadata: { status: 'connected', paired_at: pairedAt },
+      });
+      try {
+        await this.#connectLive(account);
+      } catch (error) {
+        this.logger.warn({ err: error }, 'signal receive attach after pairing failed; scheduling reconnect');
+        this.#scheduleReconnect(account);
+      }
+      return this.updateAttempt(attemptId, {
+        state: 'completed',
+        prompt: null,
+        fields: [],
+        qr_text: null,
+        qr_svg: null,
+        account_id: account,
+        error: null,
+        metadata: { ...(attempt.metadata || {}), paired: true, paired_at: pairedAt },
+      });
+    }
+
+    if (attempt.state === 'error') {
+      try {
+        return await this.#issueQr(attemptId);
+      } catch {
+        return attempt;
       }
     }
+
+    const generatedAt = attempt.metadata?.qr_generated_at || 0;
+    if (!attempt.qr_text || Date.now() - generatedAt > QR_REFRESH_MS) {
+      try {
+        return await this.#issueQr(attemptId);
+      } catch (error) {
+        this.logger.warn({ err: { name: error.name, status: error.statusCode ?? null }, attempt_id: attemptId }, 'signal QR refresh failed');
+      }
+    }
+    return attempt;
+  }
+
+  // -------------------------------------------------------------- outbound
+
+  async sendMessage(..._args) {
+    throw rejectOutboundMessage();
+  }
+
+  async logout(payload = {}) {
+    this.stopped = true;
+    await this.#stopLive();
+    const result = await super.logout({
+      ...payload,
+      account_id: payload.account_id || this.liveAccount || this.defaultAccountId,
+    });
+    this.liveAccount = null;
+    return result;
   }
 }
