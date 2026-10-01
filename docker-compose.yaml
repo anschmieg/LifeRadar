@@ -156,14 +156,6 @@ services:
       - ${LIFERADAR_DATA_ROOT:-/data/liferadar}/connectors:/app/connectors
     expose:
       - "8020"
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.liferadar-chat-gateway.rule=Host(`liferadar.nothing.pink`)"
-      - "traefik.http.routers.liferadar-chat-gateway.entrypoints=https"
-      - "traefik.http.routers.liferadar-chat-gateway.tls=true"
-      - "traefik.http.routers.liferadar-chat-gateway.tls.certresolver=letsencrypt"
-      - "traefik.http.services.liferadar-chat-gateway.loadbalancer.server.port=8020"
-      - "traefik.docker.network=coolify"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
