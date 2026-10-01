@@ -10,6 +10,7 @@ import { rejectOutboundMessage } from './src/read-only.mjs';
 const logger = pino({ name: 'liferadar-chat-gateway' });
 const app = express();
 app.use(express.json({ limit: '1mb' }));
+app.use((req, _res, next) => { logger.info({ method: req.method, path: req.path }, 'HTTP request'); next(); });
 
 const db = new GatewayDb({ logger });
 const connectors = new Map();
@@ -95,10 +96,12 @@ app.get('/internal/connectors', async (_req, res) => {
 app.post('/internal/connectors/:provider/login', async (req, res) => {
   try {
     const connector = getConnector(req.params.provider);
+    logger.info({ provider: req.params.provider, mode: req.body?.mode || null }, 'login begin requested');
     const result = await connector.beginLogin(req.body ?? {});
+    logger.info({ provider: req.params.provider, attempt_id: result.attempt_id, state: result.state }, 'login attempt created');
     res.json(result);
   } catch (error) {
-    logger.warn({ err: error, provider: req.params.provider }, 'login begin failed');
+    logger.warn({ err: error, provider: req.params.provider, path: req.path }, 'login begin failed');
     res.status(error.statusCode || 500).json(normalizeError(error));
   }
 });
@@ -107,9 +110,10 @@ app.get('/internal/connectors/:provider/login/:attemptId', async (req, res) => {
   try {
     const connector = getConnector(req.params.provider);
     const result = await connector.getLoginAttempt(req.params.attemptId);
+    logger.info({ provider: req.params.provider, attempt_id: req.params.attemptId, state: result.state }, 'login status retrieved');
     res.json(result);
   } catch (error) {
-    logger.warn({ err: error, provider: req.params.provider }, 'login status failed');
+    logger.warn({ err: error, provider: req.params.provider, attempt_id: req.params.attemptId, path: req.path }, 'login status failed');
     res.status(error.statusCode || 500).json(normalizeError(error));
   }
 });
@@ -117,10 +121,12 @@ app.get('/internal/connectors/:provider/login/:attemptId', async (req, res) => {
 app.post('/internal/connectors/:provider/login/:attemptId/submit', async (req, res) => {
   try {
     const connector = getConnector(req.params.provider);
+    logger.info({ provider: req.params.provider, attempt_id: req.params.attemptId, submitted_fields: Object.keys(req.body ?? {}) }, 'login step submitted');
     const result = await connector.submitLoginStep(req.params.attemptId, req.body ?? {});
+    logger.info({ provider: req.params.provider, attempt_id: req.params.attemptId, state: result.state }, 'login step completed');
     res.json(result);
   } catch (error) {
-    logger.warn({ err: error, provider: req.params.provider }, 'login step failed');
+    logger.warn({ err: error, provider: req.params.provider, attempt_id: req.params.attemptId, path: req.path }, 'login step failed');
     res.status(error.statusCode || 500).json(normalizeError(error));
   }
 });
