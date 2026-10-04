@@ -127,7 +127,6 @@ export class GatewayDb {
     const rows = await this.query(
       `select id, content_json from life_radar.message_events
        where source = 'whatsapp' and (content_text is null or content_text = '')
-         and content_json is not null and content_json::text <> '{}'
        limit 5000`
     );
     let fixed = 0;
