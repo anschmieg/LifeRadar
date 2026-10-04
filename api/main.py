@@ -1379,12 +1379,6 @@ async def connector_logout(provider: str, request: Request):
     return payload
 
 
-@app.get("/auth/telegram", response_class=HTMLResponse)
-async def telegram_auth_page(request: Request):
-    require_api_key(request, allow_query_param=True)
-    return HTMLResponse(_connector_auth_page("telegram", _provided_api_key(request, True)))
-
-
 @app.get("/auth/whatsapp", response_class=HTMLResponse)
 async def whatsapp_auth_page(request: Request):
     require_api_key(request, allow_query_param=True)
