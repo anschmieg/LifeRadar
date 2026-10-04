@@ -9,7 +9,8 @@ const NOISE_KEYS = new Set(['protocolMessage', 'senderKeyDistributionMessage']);
 function isNoisePayload(message) {
   if (!message || typeof message !== 'object') return false;
   const keys = Object.keys(message).filter((key) => key !== 'messageContextInfo');
-  return keys.length > 0 && keys.every((key) => NOISE_KEYS.has(key));
+  if (!keys.length) return true; // context metadata only — no content at all
+  return keys.every((key) => NOISE_KEYS.has(key));
 }
 
 function pickText(message) {
@@ -24,6 +25,13 @@ function pickText(message) {
   if (typeof inner === 'string') return inner;
   if (inner.conversation) return inner.conversation;
   if (inner.extendedTextMessage?.text) return inner.extendedTextMessage.text;
+  if (inner.interactiveMessage) {
+    const interactive = inner.interactiveMessage;
+    const body = interactive.body?.text || interactive.header?.title || interactive.footer?.text;
+    if (body) return body;
+  }
+  if (inner.listResponseMessage?.title) return inner.listResponseMessage.title;
+  if (inner.buttonsResponseMessage?.selectedButtonId) return inner.buttonsResponseMessage.selectedButtonId;
   const kinds = [
     ['imageMessage', 'image'],
     ['videoMessage', 'video'],
