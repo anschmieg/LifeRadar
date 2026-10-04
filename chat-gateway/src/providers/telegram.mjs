@@ -226,10 +226,12 @@ export class TelegramConnector extends BaseConnector {
       })
     );
 
-    if (result.className === 'auth.loginTokenMigrateTo') {
-      if (typeof client._switchDC === 'function') {
-        await client._switchDC(result.dcId);
-      }
+    // An api_id registered on another DC returns auth.loginTokenMigrateTo;
+    // after switching, ImportLoginToken can itself hand back another hop.
+    // Follow the chain (bounded) instead of only handling a single hop.
+    for (let hop = 0; hop < 4 && result.className === 'auth.loginTokenMigrateTo'; hop++) {
+      if (typeof client._switchDC !== 'function') break;
+      await client._switchDC(result.dcId);
       result = await client.invoke(new Api.auth.ImportLoginToken({ token: result.token }));
     }
 
@@ -269,7 +271,7 @@ export class TelegramConnector extends BaseConnector {
 
     return this.updateAttempt(attemptId, {
       state: 'error',
-      error: 'Could not generate Telegram QR login token.',
+      error: `Could not generate Telegram QR login token (unexpected response: ${result.className}). Try again or use phone + code.`,
     });
   }
 
