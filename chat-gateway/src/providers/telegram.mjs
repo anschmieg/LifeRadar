@@ -87,7 +87,9 @@ export class TelegramConnector extends BaseConnector {
     const phoneNumber = body.phone_number || attempt.metadata.phone_number || null;
     const code = body.code || null;
     const client = await this.#createCodeClient();
-    const { SignIn } = await import('telegram/tl/functions/auth/index.js');
+    // gramjs 2.26.x has no `tl/functions/auth` module; auth classes hang off
+    // the top-level `Api` namespace (verified: `Api.auth.SignIn` is a function).
+    const { Api } = await import('telegram');
 
     if (attempt.state === 'awaiting_phone') {
       if (!phoneNumber) {
@@ -125,7 +127,7 @@ export class TelegramConnector extends BaseConnector {
       }
       try {
         const result = await client.invoke(
-          new SignIn({
+          new Api.auth.SignIn({
             phoneNumber: auth.phone_number,
             phoneCodeHash: auth.phone_code_hash,
             phoneCode: code,
