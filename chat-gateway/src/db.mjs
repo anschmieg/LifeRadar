@@ -102,6 +102,28 @@ export class GatewayDb {
       [conversationId, source, externalId, senderId, senderLabel, occurredAt, contentText, JSON.stringify(contentJson ?? {}), isInbound, JSON.stringify(provenance ?? {})]
     );
   }
+  // One-time repair: WhatsApp media rows ingested before media labeling had
+  // blank content_text. content_json keeps the raw Baileys payload, so labels
+  // can be reconstructed without touching the socket.
+  async repairWhatsappMediaLabels() {
+    const rows = await this.query(
+      `select id, content_json from life_radar.message_events
+       where source = 'whatsapp' and (content_text is null or content_text = '')
+         and content_json is not null and content_json::text <> '{}'
+       limit 5000`
+    );
+    let fixed = 0;
+    for (const row of rows.rows) {
+      const text = pickText(json(row.content_json));
+      if (!text) continue;
+      const update = await this.query(
+        `update life_radar.message_events set content_text = $1 where id = $2 and (content_text is null or content_text = '')`,
+        [text, row.id]
+      );
+      fixed += update.rowCount ?? 0;
+    }
+    return fixed;
+  }
   async purgeExcludedConversations(provider, externalIds) {
     const ids = (externalIds || []).map(String).filter(Boolean);
     if (!ids.length) return 0;

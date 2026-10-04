@@ -27,6 +27,14 @@ export class WhatsAppConnector extends BaseConnector {
     if (!this.unofficialAllowed || !(await this.hasSession())) return { provider: this.provider, status: 'no_session' };
     this.stopped = false;
     await this.#connectSocket();
+    if (typeof this.db.repairWhatsappMediaLabels === 'function') {
+      try {
+        const fixed = await this.db.repairWhatsappMediaLabels();
+        if (fixed) this.logger.info({ fixed }, 'repaired blank WhatsApp media labels');
+      } catch (error) {
+        this.logger.warn({ err: error }, 'WhatsApp media label repair failed; continuing');
+      }
+    }
     return { provider: this.provider, status: 'connecting' };
   }
 
