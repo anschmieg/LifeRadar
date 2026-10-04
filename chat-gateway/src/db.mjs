@@ -2,6 +2,16 @@ import { Pool } from 'pg';
 
 function env(name, fallback = '') { return process.env[name] ?? fallback; }
 function json(value) { return value == null ? {} : value; }
+const NOISE_KEYS = new Set(['protocolMessage', 'senderKeyDistributionMessage']);
+
+// Baileys control chatter (history-sync notices, key distribution) carries no
+// user content and must not create message rows.
+function isNoisePayload(message) {
+  if (!message || typeof message !== 'object') return false;
+  const keys = Object.keys(message).filter((key) => key !== 'messageContextInfo');
+  return keys.length > 0 && keys.every((key) => NOISE_KEYS.has(key));
+}
+
 function pickText(message) {
   if (!message) return null;
   if (typeof message === 'string') return message;
@@ -114,8 +124,17 @@ export class GatewayDb {
     );
     let fixed = 0;
     for (const row of rows.rows) {
-      const text = pickText(json(row.content_json));
-      if (!text) continue;
+      const payload = json(row.content_json);
+      const text = pickText(payload);
+      if (!text) {
+        // Control chatter (history-sync notices etc.) has no text and no value —
+        // drop the row entirely.
+        if (isNoisePayload(payload)) {
+          await this.query(`delete from life_radar.message_events where id = $1`, [row.id]);
+          fixed++;
+        }
+        continue;
+      }
       const update = await this.query(
         `update life_radar.message_events set content_text = $1 where id = $2 and (content_text is null or content_text = '')`,
         [text, row.id]
@@ -144,7 +163,7 @@ export class GatewayDb {
     await this.upsertMessage({ conversationId, source: 'telegram', externalId: `${externalId}:${message.id}`, senderId: message.senderId ? String(message.senderId) : null, senderLabel: message.sender?.username || message.sender?.title || [message.sender?.firstName, message.sender?.lastName].filter(Boolean).join(' ') || null, occurredAt, contentText: message.message || null, contentJson: { raw_text: message.message || null, media: message.media ? message.media.className || 'media' : null }, isInbound: meId ? String(message.senderId ?? '') !== String(meId) : !message.out, provenance: { provider: 'telegram', account_id: accountId, message_id: String(message.id) } });
   }
   async ingestWhatsAppChat(accountId, chat) { if (!chat?.id) return null; return this.upsertConversation({ source: 'whatsapp', externalId: String(chat.id), accountId, title: chat.name || chat.pushName || String(chat.id), participants: [], lastEventAt: chat.conversationTimestamp ? new Date(chat.conversationTimestamp * 1000) : null, metadata: { provider: 'whatsapp', jid: String(chat.id), archived: !!chat.archived, unread_count: chat.unreadCount ?? 0 } }); }
-  async ingestWhatsAppMessage(accountId, message, { conversationTitle = null } = {}) { const key = message?.key; if (!key?.id || !key?.remoteJid) return; const occurredAt = message.messageTimestamp ? new Date(Number(message.messageTimestamp) * 1000) : new Date(); const conversationId = await this.upsertConversation({ source: 'whatsapp', externalId: String(key.remoteJid), accountId, title: conversationTitle || String(key.remoteJid), participants: [], lastEventAt: occurredAt, metadata: { provider: 'whatsapp', jid: String(key.remoteJid) } }); await this.upsertMessage({ conversationId, source: 'whatsapp', externalId: `${key.remoteJid}:${key.id}`, senderId: key.participant || key.remoteJid, occurredAt, contentText: pickText(message.message), contentJson: json(message.message), isInbound: !key.fromMe, provenance: { provider: 'whatsapp', account_id: accountId, remote_jid: key.remoteJid } }); }
+  async ingestWhatsAppMessage(accountId, message, { conversationTitle = null } = {}) { const key = message?.key; if (!key?.id || !key?.remoteJid) return; if (isNoisePayload(message.message)) return; const occurredAt = message.messageTimestamp ? new Date(Number(message.messageTimestamp) * 1000) : new Date(); const conversationId = await this.upsertConversation({ source: 'whatsapp', externalId: String(key.remoteJid), accountId, title: conversationTitle || String(key.remoteJid), participants: [], lastEventAt: occurredAt, metadata: { provider: 'whatsapp', jid: String(key.remoteJid) } }); await this.upsertMessage({ conversationId, source: 'whatsapp', externalId: `${key.remoteJid}:${key.id}`, senderId: key.participant || key.remoteJid, occurredAt, contentText: pickText(message.message), contentJson: json(message.message), isInbound: !key.fromMe, provenance: { provider: 'whatsapp', account_id: accountId, remote_jid: key.remoteJid } }); }
   async ingestSignalMessage(accountId, event) {
     if (!event?.conversationId || !event?.messageId) return null;
     const externalMessageId = `${event.conversationId}:${event.messageId}`;
