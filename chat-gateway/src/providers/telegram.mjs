@@ -226,16 +226,20 @@ export class TelegramConnector extends BaseConnector {
       })
     );
 
-    // An api_id registered on another DC returns auth.loginTokenMigrateTo;
-    // after switching, ImportLoginToken can itself hand back another hop.
-    // Follow the chain (bounded) instead of only handling a single hop.
-    for (let hop = 0; hop < 4 && result.className === 'auth.loginTokenMigrateTo'; hop++) {
+    // gramjs 2.26 names classNames in PascalCase (`auth.LoginToken`), while the
+    // TL schema uses snake_case (`auth.loginToken`). Compare case-insensitively.
+    const typeOf = (r) => String(r.className || '').toLowerCase();
+
+    // An api_id registered on another DC returns LoginTokenMigrateTo; after
+    // switching, ImportLoginToken can itself hand back another hop. Follow the
+    // chain (bounded) instead of only handling a single hop.
+    for (let hop = 0; hop < 4 && typeOf(result) === 'auth.logintokenmigrateto'; hop++) {
       if (typeof client._switchDC !== 'function') break;
       await client._switchDC(result.dcId);
       result = await client.invoke(new Api.auth.ImportLoginToken({ token: result.token }));
     }
 
-    if (result.className === 'auth.loginTokenSuccess') {
+    if (typeOf(result) === 'auth.logintokensuccess') {
       this.client = client;
       await this.#finishAuthorization(result.authorization?.user ?? null, attemptId);
       this.qrClients.delete(attemptId);
@@ -250,7 +254,7 @@ export class TelegramConnector extends BaseConnector {
       });
     }
 
-    if (result.className === 'auth.loginToken') {
+    if (typeOf(result) === 'auth.logintoken') {
       const token = toBase64Url(result.token);
       const qrText = `tg://login?token=${token}`;
       const qrSvg = await QRCode.toString(qrText, { type: 'svg', margin: 1 });
