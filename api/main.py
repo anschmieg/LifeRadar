@@ -503,7 +503,26 @@ async def call_chat_gateway(method: str, path: str, payload: Optional[dict] = No
 
 def _connector_auth_page(provider: str, api_key: str) -> str:
     safe_provider = provider.lower()
-    submit_mode = "poll" if safe_provider in {"whatsapp", "telegram"} else "submit"
+    # Every current connector supports QR-guided login, so the page polls the
+    # attempt endpoint after start/submit regardless of provider.
+    submit_mode = "poll"
+    copy = {
+        "whatsapp": {
+            "blurb": "Link your account by scanning a QR code, just like the normal web client flow.",
+            "summary": "Open the pair screen and scan the QR code with your phone.",
+            "qr_hint": 'On your phone: <span class="mono">WhatsApp → Settings → Linked Devices → Link a Device</span>',
+        },
+        "telegram": {
+            "blurb": "Link your Telegram account using QR by default, with a phone-and-code fallback if you prefer.",
+            "summary": "Start with QR. If you want, you can switch to a phone-and-code login instead.",
+            "qr_hint": 'On your phone: <span class="mono">Telegram → Settings → Devices → Link Desktop Device</span>',
+        },
+        "signal": {
+            "blurb": "Link your Signal account as a read-only device by scanning a QR code. LifeRadar never sends messages from Signal.",
+            "summary": "Scan the QR code with your phone to pair LifeRadar as a linked device.",
+            "qr_hint": 'On your phone: <span class="mono">Signal → Settings → Linked Devices → Link a Device</span>',
+        },
+    }[safe_provider]
     title = provider.title()
     return f"""<!doctype html>
 <html lang="en">
@@ -570,7 +589,7 @@ def _connector_auth_page(provider: str, api_key: str) -> str:
       <div class="badge">LifeRadar Connector</div>
       <h1>{title} Login</h1>
       <p class="muted">
-        {"Link your account by scanning a QR code, just like the normal web client flow." if safe_provider == "whatsapp" else "Link your Telegram account using QR by default, with a phone-and-code fallback if you prefer."}
+        {copy['blurb']}
       </p>
       <ul class="steps" id="steps">
         <li id="step-start" class="active">Start</li>
@@ -581,7 +600,7 @@ def _connector_auth_page(provider: str, api_key: str) -> str:
     <div class="card">
       <h2>{title}</h2>
       <div class="hint" id="summary">
-        {"Open the pair screen and scan the QR code with your phone." if safe_provider == "whatsapp" else "Start with QR. If you want, you can switch to a phone-and-code login instead."}
+        {copy['summary']}
       </div>
     </div>
   </section>
@@ -613,7 +632,7 @@ def _connector_auth_page(provider: str, api_key: str) -> str:
       <div id="qr-panel" class="card hidden stack">
         <div class="qr-wrap">
           <div id="qr"></div>
-          <div class="hint" id="qrHint">{'On your phone: <span class="mono">WhatsApp → Settings → Linked Devices → Link a Device</span>' if safe_provider == 'whatsapp' else 'On your phone: <span class="mono">Telegram → Settings → Devices → Link Desktop Device</span>'}</div>
+          <div class="hint" id="qrHint">{copy['qr_hint']}</div>
         </div>
       </div>
 
@@ -1379,10 +1398,22 @@ async def connector_logout(provider: str, request: Request):
     return payload
 
 
+@app.get("/auth/telegram", response_class=HTMLResponse)
+async def telegram_auth_page(request: Request):
+    require_api_key(request, allow_query_param=True)
+    return HTMLResponse(_connector_auth_page("telegram", _provided_api_key(request, True)))
+
+
 @app.get("/auth/whatsapp", response_class=HTMLResponse)
 async def whatsapp_auth_page(request: Request):
     require_api_key(request, allow_query_param=True)
     return HTMLResponse(_connector_auth_page("whatsapp", _provided_api_key(request, True)))
+
+
+@app.get("/auth/signal", response_class=HTMLResponse)
+async def signal_auth_page(request: Request):
+    require_api_key(request, allow_query_param=True)
+    return HTMLResponse(_connector_auth_page("signal", _provided_api_key(request, True)))
 
 
 @app.get("/auth/matrix-device", response_class=HTMLResponse)
