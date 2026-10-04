@@ -102,6 +102,16 @@ export class GatewayDb {
       [conversationId, source, externalId, senderId, senderLabel, occurredAt, contentText, JSON.stringify(contentJson ?? {}), isInbound, JSON.stringify(provenance ?? {})]
     );
   }
+  async purgeExcludedConversations(provider, externalIds) {
+    const ids = (externalIds || []).map(String).filter(Boolean);
+    if (!ids.length) return 0;
+    // messages cascade with their conversation (ON DELETE CASCADE)
+    const removed = await this.query(
+      `delete from life_radar.conversations where source = $1 and external_id = any($2::text[])`,
+      [provider, ids]
+    );
+    return removed.rowCount ?? 0;
+  }
   async ingestTelegramMessage(accountId, dialog, message, meId = null) {
     if (!message?.id) return;
     if (message.action) return; // service messages (joins, pins, calls) are noise

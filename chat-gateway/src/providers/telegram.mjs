@@ -54,9 +54,32 @@ export class TelegramConnector extends BaseConnector {
     const me = await client.getMe();
     const accountId = String(me?.id ?? this.defaultAccountId);
     await this.db.upsertConnectorAccount({ provider: this.provider, accountId, authState: 'connected', enabled: true, metadata: { restored_at: new Date().toISOString() } });
+    await this.#purgeExcludedDialogs(client);
     await this.#backfill(accountId, me);
     await this.#startLiveUpdates(accountId, me);
     return { provider: this.provider, status: 'connected', accountId };
+  }
+
+  // Startup cleanup: conversations for excluded (agent-plumbing) dialogs were
+  // ingested before the filter existed — remove them once, from the source of
+  // truth, instead of carrying the noise in every read.
+  async #purgeExcludedDialogs(client) {
+    const ids = [];
+    for (const name of this.excludedUsers) {
+      try {
+        const entity = await client.getEntity(name);
+        if (entity?.id) ids.push(String(entity.id));
+      } catch {
+        // unknown handle — nothing to purge for it
+      }
+    }
+    if (!ids.length || typeof this.db.purgeExcludedConversations !== 'function') return;
+    try {
+      const removed = await this.db.purgeExcludedConversations(this.provider, ids);
+      this.logger.info({ provider: this.provider, removed }, 'purged excluded telegram dialogs');
+    } catch (error) {
+      this.logger.warn({ err: error }, 'excluded-dialog purge failed; continuing');
+    }
   }
 
   async beginLogin(body = {}) {
