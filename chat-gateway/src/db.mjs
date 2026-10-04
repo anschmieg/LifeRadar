@@ -5,7 +5,37 @@ function json(value) { return value == null ? {} : value; }
 function pickText(message) {
   if (!message) return null;
   if (typeof message === 'string') return message;
-  return message.conversation || message.extendedTextMessage?.text || message.imageMessage?.caption || message.videoMessage?.caption || null;
+  // Unwrap Baileys containers (ephemeral / view-once / document-with-caption).
+  const inner = message.ephemeralMessage?.message
+    || message.viewOnceMessage?.message
+    || message.viewOnceMessageV2?.message
+    || message.documentWithCaptionMessage?.message
+    || message;
+  if (typeof inner === 'string') return inner;
+  if (inner.conversation) return inner.conversation;
+  if (inner.extendedTextMessage?.text) return inner.extendedTextMessage.text;
+  const kinds = [
+    ['imageMessage', 'image'],
+    ['videoMessage', 'video'],
+    ['audioMessage', 'voice message'],
+    ['pttMessage', 'voice note'],
+    ['stickerMessage', 'sticker'],
+    ['documentMessage', 'document'],
+    ['contactMessage', 'contact'],
+    ['contactsArrayMessage', 'contacts'],
+    ['locationMessage', 'location'],
+    ['liveLocationMessage', 'live location'],
+    ['pollCreationMessage', 'poll'],
+    ['pollCreationMessageV3', 'poll'],
+    ['reactionMessage', 'reaction'],
+  ];
+  for (const [key, label] of kinds) {
+    const media = inner[key];
+    if (!media) continue;
+    const detail = media.caption || media.fileName || media.title || (key === 'reactionMessage' ? media.text : null);
+    return `[${label}${detail ? `: ${detail}` : ''}]`;
+  }
+  return null;
 }
 
 export class GatewayDb {
@@ -74,6 +104,7 @@ export class GatewayDb {
   }
   async ingestTelegramMessage(accountId, dialog, message, meId = null) {
     if (!message?.id) return;
+    if (message.action) return; // service messages (joins, pins, calls) are noise
     const externalId = String(dialog.id);
     // gramjs `message.date` is unix epoch SECONDS; timestamptz needs a Date.
     const occurredAt = message.date instanceof Date ? message.date : new Date(Number(message.date) * 1000);

@@ -34,6 +34,17 @@ export class TelegramConnector extends BaseConnector {
     this.readSession = readSession || (() => this.#readSession());
     this.createAuthorizedClient = createAuthorizedClient || ((session) => this.#newAuthorizedClient(session));
     this.newMessageEvent = newMessageEvent;
+    // Dialogs whose traffic is agent plumbing, not Adrian's social corpus.
+    const excluded = (process.env.LIFERADAR_TELEGRAM_EXCLUDED_USERS || 'spring_nothingpink_bot')
+      .split(',').map((value) => value.trim().toLowerCase()).filter(Boolean);
+    this.excludedUsers = new Set(excluded);
+  }
+
+  #isBlockedDialog(dialog) {
+    const entity = dialog?.entity || {};
+    const usernames = [entity.username, entity.usernames?.map((item) => item.username)].flat().filter(Boolean);
+    if (usernames.some((name) => this.excludedUsers.has(String(name).toLowerCase()))) return true;
+    return this.excludedUsers.has(String(entity.id ?? ''));
   }
 
   async start() {
@@ -321,6 +332,7 @@ export class TelegramConnector extends BaseConnector {
       const dialog = entity
         ? { id: String(entity.id ?? peerId), entity, title: entity.title || entity.username || String(peerId) }
         : { id: String(peerId), entity: {}, title: String(peerId) };
+      if (this.#isBlockedDialog(dialog)) return;
       try {
         await this.db.ingestTelegramMessage(accountId, dialog, message, me?.id);
         await this.db.setCheckpoint(this.provider, accountId, 'live_cursor', { message_id: message.id, peer_id: String(peerId) });
@@ -361,6 +373,7 @@ export class TelegramConnector extends BaseConnector {
     const dialogs = await client.getDialogs({ limit: 100 });
 
     for (const dialog of dialogs) {
+      if (this.#isBlockedDialog(dialog)) continue;
       const checkpoint = await this.db.getCheckpoint(this.provider, accountId, `dialog:${dialog.id}`);
       const minId = Number(checkpoint?.message_id || 0);
       let remaining = limitPerChat;
