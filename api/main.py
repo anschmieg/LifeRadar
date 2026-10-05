@@ -1330,12 +1330,14 @@ async def proxy_to_mcp_path(request: Request, path: str):
 # --- /health ---
 @app.get("/health", response_model=HealthResponse)
 async def health():
-    pool = await get_pool()
     try:
+        pool = await get_pool()
         async with pool.acquire() as conn:
             await conn.fetchval("SELECT 1")
         return HealthResponse(status="ok", database="connected")
     except Exception as e:
+        # Surface the real failure (DNS, auth, ...) on the public health
+        # endpoint so container-external diagnosis is possible.
         return HealthResponse(status="degraded", database=f"error: {e}")
 
 

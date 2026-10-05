@@ -16,15 +16,28 @@ async def get_pool() -> asyncpg.Pool:
         password = os.environ.get("LIFERADAR_DB_PASSWORD", "")
         database = os.environ.get("LIFERADAR_DB_NAME", "life_radar")
 
-        _pool = await asyncpg.create_pool(
-            host=host,
-            port=port,
-            user=user,
-            password=password,
-            database=database,
-            min_size=2,
-            max_size=10,
-        )
+        # Retry transient startup failures (DNS/race during compose start) so the
+        # container stays up and /health can report the real error instead of
+        # uvicorn crash-looping with no visible logs.
+        import asyncio
+        last_error: Exception | None = None
+        for attempt in range(30):
+            try:
+                _pool = await asyncpg.create_pool(
+                    host=host,
+                    port=port,
+                    user=user,
+                    password=password,
+                    database=database,
+                    min_size=2,
+                    max_size=10,
+                )
+                break
+            except Exception as e:
+                last_error = e
+                await asyncio.sleep(2)
+        else:
+            raise RuntimeError(f"db connect failed after 30 attempts: {host}:{port} {last_error}")
     return _pool
 
 
