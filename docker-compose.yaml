@@ -36,6 +36,7 @@ services:
       - "traefik.docker.network=coolify"
     networks:
       - coolify
+      - liferadar-db-link
     restart: unless-stopped
     healthcheck:
       test:
@@ -74,6 +75,7 @@ services:
       - "host.docker.internal:host-gateway"
     networks:
       - coolify
+      - liferadar-db-link
     restart: unless-stopped
     healthcheck:
       test:
@@ -130,6 +132,7 @@ services:
       - "host.docker.internal:host-gateway"
     networks:
       - coolify
+      - liferadar-db-link
     restart: unless-stopped
 
   liferadar-chat-gateway:
@@ -164,6 +167,7 @@ services:
     networks:
       - coolify
       - liferadar-signal-backend
+      - liferadar-db-link
     restart: unless-stopped
     healthcheck:
       test:
@@ -196,6 +200,7 @@ services:
       - "host.docker.internal:host-gateway"
     networks:
       - coolify
+      - liferadar-db-link
     restart: unless-stopped
     healthcheck:
       test:
@@ -265,6 +270,13 @@ networks:
   coolify:
     external: true
     name: coolify
+  # The production Postgres runs in the original LifeRadar service stack and
+  # carries the `liferadar-db` alias on that stack's network. Attach DB-using
+  # services to it so DNS resolves. NOTE: if the old `vwswgg0s48kggs0cwkkc0k8o`
+  # stack is ever deleted, move the database first and update this name.
+  liferadar-db-link:
+    external: true
+    name: vwswgg0s48kggs0cwkkc0k8o
   # Private gateway-to-sidecar link. The gateway has a separate coolify
   # interface; no other Coolify workload can reach this unauthenticated API.
   liferadar-signal-backend:
