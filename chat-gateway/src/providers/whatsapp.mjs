@@ -45,6 +45,22 @@ export class WhatsAppConnector extends BaseConnector {
       throw error;
     }
     await this.ensureDirectories();
+    // An unpaired socket that exhausted its QR rotations never emits another
+    // `update.qr`, so reusing it would leave the login attempt stuck in
+    // `initializing`. Tear it down and build a fresh one that emits a QR.
+    if (this.socket && !this.socket.user) {
+      try {
+        await this.socket.end();
+      } catch {
+        // socket already dead — nothing to tear down
+      }
+      this.socket = null;
+      this.qrState = null;
+    }
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     const attempt = this.createAttempt({
       state: 'initializing',
       prompt: 'Scan the QR code with WhatsApp on your phone.',
